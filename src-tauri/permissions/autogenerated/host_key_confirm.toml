@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-host-key-confirm"
+description = "Enables the host_key_confirm command without any pre-configured scope."
+commands.allow = ["host_key_confirm"]
+
+[[permission]]
+identifier = "deny-host-key-confirm"
+description = "Denies the host_key_confirm command without any pre-configured scope."
+commands.deny = ["host_key_confirm"]

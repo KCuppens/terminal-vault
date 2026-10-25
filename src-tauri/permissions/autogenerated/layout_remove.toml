@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-layout-remove"
+description = "Enables the layout_remove command without any pre-configured scope."
+commands.allow = ["layout_remove"]
+
+[[permission]]
+identifier = "deny-layout-remove"
+description = "Denies the layout_remove command without any pre-configured scope."
+commands.deny = ["layout_remove"]

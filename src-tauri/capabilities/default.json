@@ -1,0 +1,30 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Event listening plus the app's own vault, host, key, layout and session commands. No fs, shell or http access.",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-vault-exists",
+    "allow-vault-create",
+    "allow-vault-unlock",
+    "allow-vault-lock",
+    "allow-hosts-list",
+    "allow-hosts-add",
+    "allow-hosts-update",
+    "allow-hosts-remove",
+    "allow-keys-list",
+    "allow-keys-generate",
+    "allow-keys-import",
+    "allow-layout-list",
+    "allow-layout-save",
+    "allow-layout-remove",
+    "allow-session-open",
+    "allow-session-attach",
+    "allow-session-write",
+    "allow-session-resize",
+    "allow-session-close",
+    "allow-host-key-confirm"
+  ]
+}
