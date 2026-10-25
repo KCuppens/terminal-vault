@@ -1,4 +1,4 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -171,7 +171,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         return result;
     }
     #[cfg(unix)]
-    if let Ok(d) = File::open(dir) {
+    if let Ok(d) = fs::File::open(dir) {
         let _ = d.sync_all();
     }
     Ok(())
