@@ -1,12 +1,21 @@
+export type StrengthTone = "none" | "weak" | "fair" | "good" | "strong";
+
 export interface Strength {
-  score: 0 | 1 | 2 | 3 | 4;
+  bits: number;
+  /** Filled segments of the 6-segment meter, 0 for an empty passphrase. */
+  segments: number;
+  tone: StrengthTone;
   label: string;
-  hint: string;
 }
 
-const LABELS = ["Very weak", "Weak", "Fair", "Strong", "Excellent"] as const;
+export const SEGMENT_COUNT = 6;
+export const MIN_PASSPHRASE_LENGTH = 8;
+export const STRENGTH_HINT = `Use at least ${MIN_PASSPHRASE_LENGTH} characters. Longer and more random is better.`;
+
+const BITS_PER_SEGMENT = 14;
 
 export function passphraseStrength(pass: string): Strength {
+  if (pass === "") return { bits: 0, segments: 0, tone: "none", label: "" };
   const chars = [...pass];
   const pool =
     (/[a-z]/.test(pass) ? 26 : 0) +
@@ -16,12 +25,13 @@ export function passphraseStrength(pass: string): Strength {
   const distinct = new Set(chars).size;
   const effective = Math.min(chars.length, distinct * 2);
   const bits = pool === 0 ? 0 : effective * Math.log2(pool);
-  const score = bits < 28 ? 0 : bits < 45 ? 1 : bits < 65 ? 2 : bits < 90 ? 3 : 4;
-  const hint =
-    chars.length < 12
-      ? "Use at least 12 characters"
-      : score < 3
-        ? "Add more words or mix character types"
-        : "Good. This passphrase cannot be recovered if you forget it";
-  return { score: score as Strength["score"], label: LABELS[score], hint };
+  const segments = Math.min(SEGMENT_COUNT, 1 + Math.floor(bits / BITS_PER_SEGMENT));
+  const tone: StrengthTone = bits < 28 ? "weak" : bits < 45 ? "fair" : bits < 65 ? "good" : "strong";
+  const name = { weak: "Weak", fair: "Fair", good: "Good", strong: "Strong" }[tone];
+  const rounded = Math.max(5, Math.round(bits / 5) * 5);
+  return { bits, segments, tone, label: `${name} (about ${rounded} bits)` };
+}
+
+export function acceptablePassphrase(pass: string): boolean {
+  return [...pass].length >= MIN_PASSPHRASE_LENGTH;
 }

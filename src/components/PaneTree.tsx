@@ -1,14 +1,23 @@
-import { useMemo, useRef, type Dispatch, type KeyboardEvent, type PointerEvent } from "react";
+import { useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type PointerEvent } from "react";
 
-import type { Host, SplitDir } from "../ipc";
+import type { Host, Settings, SplitDir } from "../ipc";
 import { computeGeometry, type Action, type Divider, type Rect, type TabState } from "../lib/panes";
-import { TerminalView } from "./TerminalView";
+import type { ResolvedTheme } from "../lib/theme";
+import type { ChangedKey } from "./HostKeyDialogs";
+import { TerminalView, type PaneStatus } from "./TerminalView";
+import { Icon } from "./ui";
 
 interface Props {
   tab: TabState;
   visible: boolean;
   hosts: Host[];
+  settings: Settings;
+  theme: ResolvedTheme;
+  findToken: number;
   dispatch: Dispatch<Action>;
+  onAssign(paneId: string, host: Host): void;
+  onStatus(paneId: string, status: PaneStatus | null): void;
+  onHostKeyChanged(info: ChangedKey): void;
 }
 
 const pct = (n: number) => `${n * 100}%`;
@@ -17,10 +26,11 @@ const rectStyle = (r: Rect) => ({ left: pct(r.x), top: pct(r.y), width: pct(r.w)
 
 const KEY_STEP = 0.02;
 
-export function PaneTree({ tab, visible, hosts, dispatch }: Props) {
+export function PaneTree({ tab, visible, hosts, settings, theme, findToken, dispatch, onAssign, onStatus, onHostKeyChanged }: Props) {
   const geometry = useMemo(() => computeGeometry(tab.root), [tab.root]);
   const containerRef = useRef<HTMLDivElement>(null);
   const hostById = useMemo(() => new Map(hosts.map((h) => [h.id, h])), [hosts]);
+
   const split = (dir: SplitDir) =>
     dispatch({ type: "split", dir, splitId: crypto.randomUUID(), paneId: crypto.randomUUID() });
 
@@ -42,54 +52,55 @@ export function PaneTree({ tab, visible, hosts, dispatch }: Props) {
     dispatch({ type: "setRatio", splitId: d.splitId, ratio: d.ratio + (e.key === forward ? KEY_STEP : -KEY_STEP) });
   }
 
+  const closePane = (paneId: string) => dispatch({ type: "closePane", paneId });
+  const [zoomId, setZoomId] = useState<string | null>(null);
+  const zoomedLeaf = geometry.leaves.some((l) => l.id === zoomId) ? zoomId : null;
+
   return (
     <div className="pane-area" ref={containerRef} hidden={!visible}>
       {geometry.leaves.map((leaf) => {
-        const host = leaf.hostId === null ? null : hostById.get(leaf.hostId);
         const focused = tab.focus === leaf.id;
         return (
           <div
             key={leaf.id}
-            className={focused ? "pane focused" : "pane"}
-            style={rectStyle(leaf.rect)}
+            className={[focused ? "pane focused" : "pane", zoomedLeaf === leaf.id ? "zoomed" : "", zoomedLeaf && zoomedLeaf !== leaf.id ? "zoom-hidden" : ""].filter(Boolean).join(" ")}
+            style={zoomedLeaf === leaf.id ? rectStyle({ x: 0, y: 0, w: 1, h: 1 }) : rectStyle(leaf.rect)}
             onMouseDown={() => dispatch({ type: "focusPane", paneId: leaf.id })}
           >
-            <div className="pane-head">
-              <span className="pane-title">{host ? `${host.user}@${host.name}` : "Empty pane"}</span>
-              <button title="Split right (Ctrl+Shift+D)" onClick={() => split("H")}>
-                ▥
-              </button>
-              <button title="Split down (Alt+Ctrl+Shift+D)" onClick={() => split("V")}>
-                ▤
-              </button>
-              <button title="Close pane (Ctrl+Shift+W)" onClick={() => dispatch({ type: "closePane", paneId: leaf.id })}>
-                ✕
-              </button>
-            </div>
-            <div className="pane-body">
-              {leaf.hostId === null ? (
-                <HostPicker
-                  hosts={hosts}
-                  onPick={(h) => dispatch({ type: "assignHost", paneId: leaf.id, hostId: h.id, title: h.name })}
-                />
-              ) : (
-                <TerminalView
-                  hostId={leaf.hostId}
-                  visible={visible}
-                  focused={focused}
-                  onFocus={() => dispatch({ type: "focusPane", paneId: leaf.id })}
-                />
-              )}
-            </div>
+            {leaf.hostId === null ? (
+              <EmptyPane hosts={hosts} onPick={(h) => onAssign(leaf.id, h)} onClose={() => closePane(leaf.id)} />
+            ) : (
+              <TerminalView
+                paneId={leaf.id}
+                hostId={leaf.hostId}
+                host={hostById.get(leaf.hostId)}
+                tmux={leaf.tmux}
+                visible={visible}
+                focused={focused}
+                settings={settings}
+                theme={theme}
+                findToken={findToken}
+                onStatus={onStatus}
+                onSplit={(dir) => {
+                  dispatch({ type: "focusPane", paneId: leaf.id });
+                  split(dir);
+                }}
+                onClose={() => closePane(leaf.id)}
+                zoomed={zoomedLeaf === leaf.id}
+                onZoom={() => setZoomId(zoomedLeaf === leaf.id ? null : leaf.id)}
+                onHostKeyChanged={onHostKeyChanged}
+              />
+            )}
           </div>
         );
       })}
-      {geometry.dividers.map((d) => (
+      {!zoomedLeaf && geometry.dividers.map((d) => (
         <div
           key={d.splitId}
           className={`divider ${d.dir === "H" ? "vertical" : "horizontal"}`}
           role="separator"
           aria-orientation={d.dir === "H" ? "vertical" : "horizontal"}
+          aria-label="Resize panes"
           tabIndex={0}
           style={
             d.dir === "H"
@@ -105,16 +116,39 @@ export function PaneTree({ tab, visible, hosts, dispatch }: Props) {
   );
 }
 
-function HostPicker({ hosts, onPick }: { hosts: Host[]; onPick(host: Host): void }) {
-  if (hosts.length === 0) return <p className="muted picker">Add a host in the sidebar first.</p>;
+function EmptyPane({ hosts, onPick, onClose }: { hosts: Host[]; onPick(host: Host): void; onClose(): void }) {
   return (
-    <div className="picker">
-      <p className="muted">Choose a host</p>
-      {hosts.map((h) => (
-        <button key={h.id} onClick={() => onPick(h)}>
-          {h.name} <small>{h.user}@{h.addr}</small>
+    <div className="terminal-pane">
+      <div className="pane-head">
+        <span className="dot dot-none" aria-hidden="true" />
+        <span className="pane-title">
+          <strong>Empty pane</strong>
+        </span>
+        <button type="button" className="icon-btn" aria-label="Close pane" onClick={onClose}>
+          <Icon name="close" size={14} />
         </button>
-      ))}
+      </div>
+      <div className="pane-picker">
+        {hosts.length === 0 ? (
+          <p className="muted">Add a host in the Hosts panel first.</p>
+        ) : (
+          <>
+            <p className="muted">Choose a host</p>
+            <ul className="picker-list">
+              {hosts.map((h) => (
+                <li key={h.id}>
+                  <button type="button" className="btn" onClick={() => onPick(h)}>
+                    {h.name}
+                    <span className="muted">
+                      {h.user}@{h.addr}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
     </div>
   );
 }

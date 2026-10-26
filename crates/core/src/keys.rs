@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use russh::keys::ssh_key::private::KeypairData;
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{decode_secret_key, Algorithm, HashAlg, PrivateKey};
 use thiserror::Error;
@@ -35,10 +36,10 @@ fn encode(name: &str, key: &PrivateKey) -> Result<KeyEntry, KeyError> {
     })
 }
 
-pub fn generate_ed25519(name: &str) -> Result<KeyEntry, KeyError> {
+pub fn generate_ed25519(name: &str, comment: &str) -> Result<KeyEntry, KeyError> {
     let mut key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
         .map_err(|e| KeyError::Generate(e.to_string()))?;
-    key.set_comment(name);
+    key.set_comment(comment);
     encode(name, &key)
 }
 
@@ -71,6 +72,17 @@ impl KeyEntry {
             .map_err(|e| KeyError::Invalid(e.to_string()))
     }
 
+    /// "ed25519", "rsa-4096", "ecdsa-nistp256", ... taken from the stored private key.
+    pub fn key_type(&self) -> Result<String, KeyError> {
+        let key = self.private_key()?;
+        Ok(match key.key_data() {
+            KeypairData::Ed25519(_) => "ed25519".to_string(),
+            KeypairData::Rsa(rsa) => format!("rsa-{}", rsa.key_size()),
+            KeypairData::Ecdsa(ec) => format!("ecdsa-{}", ec.curve()),
+            _ => key.algorithm().to_string(),
+        })
+    }
+
     pub fn fingerprint_sha256(&self) -> Result<String, KeyError> {
         Ok(self
             .private_key()?
@@ -94,7 +106,9 @@ mod tests {
 
     #[test]
     fn generate_roundtrip() {
-        let entry = generate_ed25519("laptop").unwrap();
+        let entry = generate_ed25519("laptop", "me@laptop").unwrap();
+        assert_eq!(entry.key_type().unwrap(), "ed25519");
+        assert!(entry.public_line().ends_with(" me@laptop"));
         assert!(entry.public_line().starts_with("ssh-ed25519 "));
         assert!(entry
             .private_openssh
@@ -108,15 +122,15 @@ mod tests {
 
     #[test]
     fn generated_keys_differ() {
-        let a = generate_ed25519("a").unwrap();
-        let b = generate_ed25519("b").unwrap();
+        let a = generate_ed25519("a", "a").unwrap();
+        let b = generate_ed25519("b", "b").unwrap();
         assert_ne!(a.public, b.public);
         assert_ne!(a.id, b.id);
     }
 
     #[test]
     fn import_plain_roundtrip() {
-        let original = generate_ed25519("orig").unwrap();
+        let original = generate_ed25519("orig", "orig").unwrap();
         let imported = import("copy", original.private_openssh.expose(), None).unwrap();
         assert_eq!(
             imported.public.split_whitespace().nth(1),
@@ -160,7 +174,7 @@ mod tests {
 
     #[test]
     fn secret_debug_is_redacted() {
-        let entry = generate_ed25519("k").unwrap();
+        let entry = generate_ed25519("k", "k").unwrap();
         let dbg = format!("{entry:?}");
         assert!(!dbg.contains("BEGIN OPENSSH"));
         assert!(dbg.contains("Secret(***)"));

@@ -27,6 +27,7 @@ fn host(name: &str) -> Host {
         user: "root".into(),
         key_id: None,
         tags: vec!["prod".into()],
+        tmux_session: None,
     }
 }
 
@@ -34,7 +35,7 @@ fn host(name: &str) -> Host {
 fn roundtrip_with_default_kdf_params() {
     let (_dir, path) = vault_path();
     let mut v = Vault::create(&path, "correct horse").unwrap();
-    let key = generate_ed25519("k").unwrap();
+    let key = generate_ed25519("k", "k").unwrap();
     let key_id = key.id;
     let secret = key.private_openssh.expose().to_string();
     v.data_mut().add_key(key).unwrap();
@@ -274,4 +275,62 @@ fn failed_save_leaves_old_file_valid() {
         .map(|e| e.file_name())
         .collect();
     assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+}
+
+/// Runs `f` with `dir` read-only. `None` when the directory stays writable (running as root).
+#[cfg(unix)]
+fn with_read_only_dir<R>(dir: &std::path::Path, f: impl FnOnce() -> R) -> Option<R> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o500)).unwrap();
+    let probe = dir.join("probe");
+    if fs::File::create(&probe).is_ok() {
+        fs::remove_file(probe).unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+        eprintln!("skipping read-only dir assertion: directory writable (running as root?)");
+        return None;
+    }
+    let out = f();
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    Some(out)
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_change_passphrase_keeps_old_passphrase() {
+    let (dir, path) = vault_path();
+    let mut v = Vault::create_with(&path, "old", FAST).unwrap();
+    let result = with_read_only_dir(dir.path(), || v.change_passphrase("new"));
+    let Some(result) = result else { return };
+    assert!(matches!(result, Err(VaultError::Io(_))));
+    Vault::open(&path, "old").unwrap();
+    assert!(matches!(
+        Vault::open(&path, "new"),
+        Err(VaultError::WrongPassphrase)
+    ));
+    v.save().unwrap();
+    Vault::open(&path, "old").unwrap();
+}
+
+#[test]
+fn update_rolls_back_when_the_change_is_invalid() {
+    let (_dir, path) = vault_path();
+    let mut v = Vault::create_with(&path, "pw", FAST).unwrap();
+    v.update(|d| d.add_host(host("web"))).unwrap();
+    let version = v.version();
+    assert!(v.update(|d| d.add_host(host("web"))).is_err());
+    assert_eq!(v.data().hosts.len(), 1);
+    assert_eq!(v.version(), version);
+}
+
+#[cfg(unix)]
+#[test]
+fn update_rolls_back_when_the_save_fails() {
+    let (dir, path) = vault_path();
+    let mut v = Vault::create_with(&path, "pw", FAST).unwrap();
+    v.update(|d| d.add_host(host("web"))).unwrap();
+    let result = with_read_only_dir(dir.path(), || v.update(|d| d.add_host(host("db"))));
+    let Some(result) = result else { return };
+    assert!(matches!(result, Err(VaultError::Io(_))));
+    assert_eq!(v.data().hosts.len(), 1);
+    assert_eq!(Vault::open(&path, "pw").unwrap().data().hosts.len(), 1);
 }

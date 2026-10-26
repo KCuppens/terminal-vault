@@ -28,6 +28,35 @@ export function layoutHostIds(node: PaneNode): string[] {
   return node.type === "terminal" ? [node.host_id] : [...layoutHostIds(node.a), ...layoutHostIds(node.b)];
 }
 
+/** Distinct host ids a layout refers to that are not in `hosts`, in first-seen order. */
+export function missingHostIds(layout: Layout, hosts: Host[]): string[] {
+  const known = new Set(hosts.map((h) => h.id));
+  const missing = new Set<string>();
+  for (const t of layout.tabs) {
+    for (const id of layoutHostIds(t.root)) if (!known.has(id)) missing.add(id);
+  }
+  return [...missing];
+}
+
+function pruneNode(node: PaneNode, known: Set<string>): PaneNode | null {
+  if (node.type === "terminal") return known.has(node.host_id) ? node : null;
+  const a = pruneNode(node.a, known);
+  const b = pruneNode(node.b, known);
+  if (a === null || b === null) return a ?? b;
+  return { ...node, a, b };
+}
+
+/** Drop panes whose host is gone, collapsing their splits and any tab left empty. */
+export function pruneLayout(layout: Layout, hosts: Host[]): Layout {
+  const known = new Set(hosts.map((h) => h.id));
+  const tabs: Tab[] = [];
+  for (const t of layout.tabs) {
+    const root = pruneNode(t.root, known);
+    if (root !== null) tabs.push({ title: t.title, root });
+  }
+  return { ...layout, tabs };
+}
+
 function toPane(node: PaneNode, newId: () => string): Pane {
   if (node.type === "terminal") return { kind: "leaf", id: newId(), hostId: node.host_id };
   return {

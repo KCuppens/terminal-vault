@@ -38,6 +38,72 @@ pub struct Host {
     pub key_id: Option<Uuid>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// tmux session every terminal on this host attaches to. `None` opens a plain shell.
+    #[serde(default)]
+    pub tmux_session: Option<String>,
+}
+
+/// A host before it has an id: what the UI submits and what an ssh config import yields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostInput {
+    pub name: String,
+    pub addr: String,
+    pub port: u16,
+    pub user: String,
+    pub key_id: Option<Uuid>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub tmux_session: Option<String>,
+}
+
+impl HostInput {
+    pub fn into_host(self) -> Host {
+        Host {
+            id: Uuid::new_v4(),
+            name: self.name,
+            addr: self.addr,
+            port: self.port,
+            user: self.user,
+            key_id: self.key_id,
+            tags: self.tags,
+            tmux_session: self.tmux_session,
+        }
+    }
+}
+
+/// Hosts as pretty JSON for sharing: no ids, no key links, no pinned host keys.
+pub fn hosts_export_json(hosts: &[Host]) -> String {
+    #[derive(Serialize)]
+    struct Row<'a> {
+        name: &'a str,
+        addr: &'a str,
+        port: u16,
+        user: &'a str,
+        tags: &'a [String],
+        tmux_session: Option<&'a str>,
+    }
+    let rows: Vec<Row> = hosts
+        .iter()
+        .map(|h| Row {
+            name: &h.name,
+            addr: &h.addr,
+            port: h.port,
+            user: &h.user,
+            tags: &h.tags,
+            tmux_session: h.tmux_session.as_deref(),
+        })
+        .collect();
+    serde_json::to_string_pretty(&rows).expect("plain rows always serialize")
+}
+
+/// tmux treats '.' and ':' as separators and the name goes into a shell command, so only a
+/// conservative character set is allowed.
+pub fn valid_tmux_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +180,8 @@ pub enum ModelError {
     EmptyUser,
     #[error("port must be non-zero")]
     ZeroPort,
+    #[error("tmux session name {0:?} must be 1 to 64 letters, digits, '_' or '-'")]
+    BadTmuxSession(String),
     #[error("split ratio {0} must be within (0, 1)")]
     BadRatio(f32),
     #[error("pane tree deeper than {MAX_PANE_DEPTH} levels")]
@@ -126,10 +194,18 @@ pub enum ModelError {
     UnknownLayout(Uuid),
     #[error("host \"{host}\" is used by layout \"{layout}\"")]
     HostInUse { host: String, layout: String },
-    #[error("key \"{key}\" is used by host \"{host}\"")]
-    KeyInUse { key: String, host: String },
+    #[error("key is used by {hosts} {}", host_word(*.hosts))]
+    KeyInUse { hosts: usize },
     #[error("duplicate known host entry for {0}")]
     DuplicateKnownHost(String),
+}
+
+fn host_word(n: usize) -> &'static str {
+    if n == 1 {
+        "host"
+    } else {
+        "hosts"
+    }
 }
 
 fn unique_name<'a>(
@@ -211,6 +287,11 @@ impl VaultData {
         }
         if host.port == 0 {
             return Err(ModelError::ZeroPort);
+        }
+        if let Some(name) = &host.tmux_session {
+            if !valid_tmux_name(name) {
+                return Err(ModelError::BadTmuxSession(name.clone()));
+            }
         }
         if let Some(key_id) = host.key_id {
             if !self.keys.iter().any(|k| k.id == key_id) {
@@ -340,11 +421,9 @@ impl VaultData {
             .iter()
             .position(|k| k.id == id)
             .ok_or(ModelError::UnknownKey(id))?;
-        if let Some(h) = self.hosts.iter().find(|h| h.key_id == Some(id)) {
-            return Err(ModelError::KeyInUse {
-                key: self.keys[idx].name.clone(),
-                host: h.name.clone(),
-            });
+        let used_by = self.hosts.iter().filter(|h| h.key_id == Some(id)).count();
+        if used_by > 0 {
+            return Err(ModelError::KeyInUse { hosts: used_by });
         }
         Ok(self.keys.remove(idx))
     }

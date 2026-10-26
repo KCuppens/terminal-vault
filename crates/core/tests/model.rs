@@ -1,5 +1,4 @@
 use tvcore::keys::generate_ed25519;
-use tvcore::layout::{plan_open, OpenPlan, PlanError};
 use tvcore::{Host, KnownHost, Layout, ModelError, PaneNode, SplitDir, Tab, VaultData};
 use uuid::Uuid;
 
@@ -12,6 +11,7 @@ fn host(name: &str, key_id: Option<Uuid>) -> Host {
         user: "me".into(),
         key_id,
         tags: vec![],
+        tmux_session: None,
     }
 }
 
@@ -106,11 +106,11 @@ fn update_and_remove_host() {
 #[test]
 fn key_in_use_and_host_in_use() {
     let mut d = VaultData::default();
-    let key = generate_ed25519("k").unwrap();
+    let key = generate_ed25519("k", "k").unwrap();
     let key_id = key.id;
     d.add_key(key).unwrap();
     assert!(matches!(
-        d.add_key(generate_ed25519("K").unwrap()),
+        d.add_key(generate_ed25519("K", "K").unwrap()),
         Err(ModelError::DuplicateName { .. })
     ));
     let h = host("web", Some(key_id));
@@ -119,6 +119,18 @@ fn key_in_use_and_host_in_use() {
         d.remove_key(key_id),
         Err(ModelError::KeyInUse { .. })
     ));
+    assert_eq!(
+        d.remove_key(key_id).unwrap_err().to_string(),
+        "key is used by 1 host"
+    );
+    let mut second = host("db", Some(key_id));
+    second.addr = "db.example.com".into();
+    d.add_host(second.clone()).unwrap();
+    assert_eq!(
+        d.remove_key(key_id).unwrap_err().to_string(),
+        "key is used by 2 hosts"
+    );
+    d.remove_host(second.id).unwrap();
 
     let l = layout("l", vec![tab("t", term(&h))]);
     let lid = l.id;
@@ -228,82 +240,19 @@ fn pane_tree_serde_shape() {
 }
 
 #[test]
-fn flatten_and_plan() {
-    let mut d = VaultData::default();
-    let key = generate_ed25519("k").unwrap();
-    let key_id = key.id;
-    d.add_key(key).unwrap();
-    let a = host("a", Some(key_id));
-    let b = host("b", Some(key_id));
-    d.add_host(a.clone()).unwrap();
-    d.add_host(b.clone()).unwrap();
-
-    let l = layout(
-        "l",
-        vec![
-            tab("one", split(0.5, term(&a), split(0.5, term(&b), term(&a)))),
-            tab("two", term(&b)),
-        ],
-    );
+fn hosts_export_has_only_shareable_fields() {
+    let mut h = host("web", Some(Uuid::new_v4()));
+    h.tags = vec!["prod".into()];
+    h.tmux_session = Some("main".into());
+    let json = tvcore::hosts_export_json(&[h, host("db", None)]);
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(
-        l.flatten(),
-        vec![(0, a.id), (0, b.id), (0, a.id), (1, b.id)]
-    );
-    let plan = plan_open(&l, &d).unwrap();
-    assert_eq!(
-        plan,
-        vec![
-            OpenPlan {
-                tab_idx: 0,
-                host_id: a.id,
-                key_id
-            },
-            OpenPlan {
-                tab_idx: 0,
-                host_id: b.id,
-                key_id
-            },
-            OpenPlan {
-                tab_idx: 0,
-                host_id: a.id,
-                key_id
-            },
-            OpenPlan {
-                tab_idx: 1,
-                host_id: b.id,
-                key_id
-            },
-        ]
-    );
-    assert!(plan_open(&layout("empty", vec![]), &d).unwrap().is_empty());
-}
-
-#[test]
-fn plan_errors_on_missing_refs() {
-    let mut d = VaultData::default();
-    let nokey = host("nokey", None);
-    d.add_host(nokey.clone()).unwrap();
-
-    let l = layout("l", vec![tab("t", term(&nokey))]);
-    assert_eq!(
-        plan_open(&l, &d),
-        Err(PlanError::HostWithoutKey("nokey".into()))
-    );
-
-    let ghost = host("ghost", None);
-    let l = layout("l", vec![tab("t", term(&ghost))]);
-    assert_eq!(plan_open(&l, &d), Err(PlanError::UnknownHost(ghost.id)));
-
-    let missing_key = Uuid::new_v4();
-    let mut dangling = host("dangling", None);
-    dangling.key_id = Some(missing_key);
-    d.hosts.push(dangling.clone());
-    let l = layout("l", vec![tab("t", term(&dangling))]);
-    assert_eq!(
-        plan_open(&l, &d),
-        Err(PlanError::UnknownKey {
-            host: "dangling".into(),
-            key: missing_key
+        v[0],
+        serde_json::json!({
+            "name": "web", "addr": "10.0.0.1", "port": 22, "user": "me",
+            "tags": ["prod"], "tmux_session": "main"
         })
     );
+    assert_eq!(v[1]["tmux_session"], serde_json::Value::Null);
+    assert_eq!(v.as_array().unwrap().len(), 2);
 }

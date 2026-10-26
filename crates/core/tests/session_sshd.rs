@@ -73,7 +73,7 @@ impl Sshd {
             .fingerprint(HashAlg::Sha256)
             .to_string();
         write_private(&dir.path().join("host_key"), &host_key);
-        let client_key = generate_ed25519("test-client").unwrap();
+        let client_key = generate_ed25519("test-client", "test-client").unwrap();
         std::fs::write(
             dir.path().join("authorized_keys"),
             format!("{}\n", client_key.public),
@@ -138,6 +138,7 @@ impl Sshd {
             user: self.user.clone(),
             key_id: Some(self.client_key.id),
             tags: vec![],
+            tmux_session: None,
         }
     }
 
@@ -201,6 +202,179 @@ async fn collect_until(
 
 fn contains(hay: &[u8], needle: &str) -> bool {
     hay.windows(needle.len()).any(|w| w == needle.as_bytes())
+}
+
+fn tmux_available() -> bool {
+    std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// Kills the tmux session even when the test panics.
+struct KillTmux(String);
+
+impl Drop for KillTmux {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("tmux")
+            .args(["kill-session", "-t", &format!("={}", self.0)])
+            .output();
+    }
+}
+
+/// The id of the window a pane runs in. `-t "$TMUX_PANE"` matters: without it tmux answers
+/// for whichever client was active last.
+async fn window_index(
+    handle: &tvcore::session::SessionHandle,
+    rx: &mut Receiver<SessionEvent>,
+) -> u32 {
+    handle
+        .write(b"echo w=$(tmux display-message -p -t \"$TMUX_PANE\" '#{window_id}' | tr -d @)x\r")
+        .await
+        .unwrap();
+    let (bytes, _) = collect_until(rx, |b, _| marker_value(b).is_some()).await;
+    marker_value(&bytes).unwrap()
+}
+
+/// Finds `w=<digits>x`; the echoed command line has `w=$(` so it never matches.
+fn marker_value(bytes: &[u8]) -> Option<u32> {
+    let text = String::from_utf8_lossy(bytes);
+    text.match_indices("w=").find_map(|(i, _)| {
+        let rest = &text[i + 2..];
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        (!digits.is_empty() && rest[digits.len()..].starts_with('x'))
+            .then(|| digits.parse().unwrap())
+    })
+}
+
+#[tokio::test]
+async fn tmux_open_creates_session_listed_by_list_tmux_and_survives_close() {
+    let sshd = sshd_or_skip!();
+    if !tmux_available() {
+        eprintln!("SKIPPING tmux test: tmux not installed");
+        return;
+    }
+    let name = format!("tvtest{}", std::process::id());
+    let _kill = KillTmux(name.clone());
+    let mgr = SessionManager::default();
+    let mut known = KnownHosts::default();
+    known.trust_new_fingerprint(&sshd.host_fingerprint);
+
+    let (handle, mut rx) = mgr
+        .open_tmux(&sshd.host(), &sshd.client_key, &mut known, SIZE, &name)
+        .await
+        .expect("open_tmux");
+    handle.write(b"echo mark$((20+1))\r").await.unwrap();
+    collect_until(&mut rx, |b, _| contains(b, "mark21")).await;
+    let listed = mgr
+        .list_tmux(&sshd.host(), &sshd.client_key, &mut known)
+        .await
+        .expect("list_tmux");
+    assert!(listed.contains(&name), "{listed:?}");
+
+    handle.close().await.ok();
+    let listed = mgr
+        .list_tmux(&sshd.host(), &sshd.client_key, &mut known)
+        .await
+        .expect("list_tmux after close");
+    assert!(
+        listed.contains(&name),
+        "session must outlive the connection: {listed:?}"
+    );
+}
+
+#[tokio::test]
+async fn panes_opened_in_parallel_get_their_own_windows_and_stay_out_of_the_picker() {
+    let sshd = sshd_or_skip!();
+    if !tmux_available() {
+        eprintln!("SKIPPING tmux test: tmux not installed");
+        return;
+    }
+    let name = format!("tvpar{}", std::process::id());
+    let _kill = KillTmux(name.clone());
+    let mgr = SessionManager::default();
+    let open = || {
+        let mgr = mgr.clone();
+        let (host, key) = (sshd.host(), sshd.client_key.clone());
+        let name = name.clone();
+        let mut known = KnownHosts::default();
+        known.trust_new_fingerprint(&sshd.host_fingerprint);
+        async move {
+            mgr.open_tmux(&host, &key, &mut known, SIZE, &name)
+                .await
+                .expect("open_tmux")
+        }
+    };
+    let ((h1, mut r1), (h2, mut r2), (h3, mut r3)) = tokio::join!(open(), open(), open());
+
+    let mut windows = vec![
+        window_index(&h1, &mut r1).await,
+        window_index(&h2, &mut r2).await,
+        window_index(&h3, &mut r3).await,
+    ];
+    let seen = windows.clone();
+    windows.sort_unstable();
+    windows.dedup();
+    assert_eq!(windows.len(), 3, "panes must not share a window: {seen:?}");
+
+    let mut known = KnownHosts::default();
+    known.trust_new_fingerprint(&sshd.host_fingerprint);
+    let listed = mgr
+        .list_tmux(&sshd.host(), &sshd.client_key, &mut known)
+        .await
+        .expect("list_tmux");
+    assert_eq!(
+        listed.iter().filter(|n| **n == name).count(),
+        1,
+        "{listed:?}"
+    );
+    let all = std::process::Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output()
+        .unwrap();
+    let total = String::from_utf8_lossy(&all.stdout).lines().count();
+    assert!(
+        total >= listed.len() + 2,
+        "grouped pane sessions must be hidden: {total} sessions, {listed:?} listed"
+    );
+
+    h2.close().await.ok();
+    h3.close().await.ok();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let listed = mgr
+        .list_tmux(&sshd.host(), &sshd.client_key, &mut known)
+        .await
+        .expect("list_tmux after closing panes");
+    assert!(listed.contains(&name), "{listed:?}");
+    h1.close().await.ok();
+}
+
+#[tokio::test]
+async fn list_tmux_drops_names_unsafe_for_a_command() {
+    let sshd = sshd_or_skip!();
+    if !tmux_available() {
+        eprintln!("SKIPPING tmux test: tmux not installed");
+        return;
+    }
+    let good = format!("tvgood{}", std::process::id());
+    let bad = format!("tv bad{}", std::process::id());
+    let _k1 = KillTmux(good.clone());
+    let _k2 = KillTmux(bad.clone());
+    for n in [&good, &bad] {
+        let out = std::process::Command::new("tmux")
+            .args(["new-session", "-d", "-s", n])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+    let mut known = KnownHosts::default();
+    known.trust_new_fingerprint(&sshd.host_fingerprint);
+    let listed = SessionManager::default()
+        .list_tmux(&sshd.host(), &sshd.client_key, &mut known)
+        .await
+        .expect("list_tmux");
+    assert!(listed.contains(&good), "{listed:?}");
+    assert!(!listed.iter().any(|n| n.contains(' ')), "{listed:?}");
 }
 
 #[tokio::test]
@@ -334,7 +508,7 @@ async fn changed_host_key_is_rejected_unless_explicitly_accepted() {
 #[tokio::test]
 async fn unauthorized_key_is_rejected() {
     let sshd = sshd_or_skip!();
-    let stranger = generate_ed25519("stranger").unwrap();
+    let stranger = generate_ed25519("stranger", "stranger").unwrap();
     let mut known = KnownHosts::default();
     known.trust_new_fingerprint(&sshd.host_fingerprint);
     let err = SessionManager::default()
@@ -356,8 +530,9 @@ async fn closed_port_reports_connect_error() {
         user: "x".into(),
         key_id: None,
         tags: vec![],
+        tmux_session: None,
     };
-    let key = generate_ed25519("k").unwrap();
+    let key = generate_ed25519("k", "k").unwrap();
     let err = SessionManager::default()
         .open(&host, &key, &mut KnownHosts::default(), SIZE)
         .await

@@ -13,7 +13,7 @@ fn api_is_usable_from_async_runtimes_and_shared_state() {
     require_send_sync::<SessionManager>();
 
     let manager = SessionManager::default();
-    let key = generate_ed25519("k").unwrap();
+    let key = generate_ed25519("k", "k").unwrap();
     let host = Host {
         id: Uuid::new_v4(),
         name: "h".into(),
@@ -22,6 +22,7 @@ fn api_is_usable_from_async_runtimes_and_shared_state() {
         user: "u".into(),
         key_id: Some(key.id),
         tags: vec![],
+        tmux_session: None,
     };
     let mut known = KnownHosts::default();
     let future = manager.open(&host, &key, &mut known, PtySize { cols: 80, rows: 24 });

@@ -90,6 +90,15 @@ describe("workspaceReducer", () => {
     expect(leaves(ws.tabs[0]!.root).map((l) => l.hostId)).toEqual(["h1", "h2"]);
   });
 
+  it("assignHost keeps a tmux choice on its own pane only", () => {
+    const ws = run([
+      { type: "assignHost", paneId: "p1", hostId: "h1", title: "alpha", tmux: "work" },
+      { type: "split", dir: "H", splitId: "s1", paneId: "p2" },
+      { type: "assignHost", paneId: "p2", hostId: "h1", title: "alpha" },
+    ], oneTab);
+    expect(computeGeometry(ws.tabs[0]!.root).leaves.map((l) => l.tmux)).toEqual(["work", undefined]);
+  });
+
   it("focusPane switches tab and focus; unknown ids are no-ops", () => {
     const two = run([{ type: "newTab", tabId: "t2", paneId: "p2" }], oneTab);
     const ws = run([{ type: "focusPane", paneId: "p1" }], two);

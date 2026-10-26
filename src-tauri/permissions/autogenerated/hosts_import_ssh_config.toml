@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-hosts-import-ssh-config"
+description = "Enables the hosts_import_ssh_config command without any pre-configured scope."
+commands.allow = ["hosts_import_ssh_config"]
+
+[[permission]]
+identifier = "deny-hosts-import-ssh-config"
+description = "Denies the hosts_import_ssh_config command without any pre-configured scope."
+commands.deny = ["hosts_import_ssh_config"]

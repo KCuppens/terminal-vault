@@ -1,12 +1,14 @@
+use std::future::Future;
+
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tvcore::session::{
     addr_port, HostKeyDecision, KnownHosts, PtySize, SessionError, SessionEvent,
 };
-use tvcore::{Host, KnownHost};
+use tvcore::{Host, KeyEntry, KnownHost, ModelError};
 use uuid::Uuid;
 
 use crate::state::{err, AppState, CmdResult, SessionEntry};
@@ -20,9 +22,49 @@ struct HostKeyPrompt {
     addr_port: String,
     key_type: String,
     fingerprint: String,
-    expected_fingerprint: Option<String>,
 }
 
+/// Runs `op` against the host's key, asking the user once about an unknown host key and
+/// retrying after it is pinned.
+async fn with_host_key<T, F, Fut>(
+    app: &AppHandle,
+    state: &AppState,
+    host_id: Uuid,
+    op: F,
+) -> CmdResult<T>
+where
+    F: Fn(Host, KeyEntry, KnownHosts) -> Fut,
+    Fut: Future<Output = Result<T, SessionError>>,
+{
+    for _ in 0..HOST_KEY_ROUNDS {
+        let (host, key, known) = state.with_vault(|v| {
+            let data = v.data();
+            let host = data.host(host_id).ok_or("unknown host")?.clone();
+            let key_id = host.key_id.ok_or("host has no key assigned")?;
+            let key = data
+                .key(key_id)
+                .ok_or("host key not found in vault")?
+                .clone();
+            Ok((host, key, data.known_hosts.clone()))
+        })?;
+        match op(host.clone(), key, KnownHosts::new(known)).await {
+            Ok(done) => return Ok(done),
+            Err(SessionError::HostKey(HostKeyDecision::NewKey {
+                key_type,
+                fingerprint,
+            })) => confirm_host_key(app, state, &host, key_type, fingerprint).await?,
+            Err(SessionError::HostKey(HostKeyDecision::Changed { expected, got, .. })) => {
+                return Err(changed_message(&addr_port(&host), &expected, &got));
+            }
+            Err(SessionError::HostKey(HostKeyDecision::Trusted)) => {}
+            Err(e) => return Err(err(e)),
+        }
+    }
+    Err("host key could not be verified".into())
+}
+
+/// `tmux`: `None` uses the host's default session, `Some("")` forces a plain shell, and any
+/// other value attaches that session.
 #[tauri::command]
 pub async fn session_open(
     app: AppHandle,
@@ -30,106 +72,154 @@ pub async fn session_open(
     host_id: Uuid,
     cols: u32,
     rows: u32,
+    tmux: Option<String>,
 ) -> CmdResult<String> {
     let size = PtySize { cols, rows };
-    for _ in 0..HOST_KEY_ROUNDS {
-        let (host, key, known) = state.with_vault(|v| {
-            let data = v.data();
-            let host = data.host(host_id).ok_or("unknown host")?.clone();
-            let key_id = host.key_id.ok_or("host has no key assigned")?;
-            let key = data.key(key_id).ok_or("host key not found in vault")?.clone();
-            Ok((host, key, data.known_hosts.clone()))
-        })?;
-        let mut known = KnownHosts::new(known);
-        match state.manager.open(&host, &key, &mut known, size).await {
-            Ok((handle, events)) => {
-                let id = Uuid::new_v4();
-                state
-                    .sessions
-                    .lock()
-                    .map_err(|_| "state poisoned".to_string())?
-                    .insert(
-                        id,
-                        SessionEntry {
-                            handle,
-                            events: Some(events),
-                        },
-                    );
-                return Ok(id.to_string());
+    let epoch = state.epoch();
+    let wanted = match tmux {
+        Some(name) if name.is_empty() => None,
+        Some(name) => Some(name),
+        None => state.with_vault(|v| {
+            Ok(v.data()
+                .host(host_id)
+                .ok_or("unknown host")?
+                .tmux_session
+                .clone())
+        })?,
+    };
+    let manager = state.manager.clone();
+    let (handle, events) = with_host_key(&app, &state, host_id, |host, key, mut known| {
+        let manager = manager.clone();
+        let wanted = wanted.clone();
+        async move {
+            match wanted {
+                Some(name) => {
+                    manager
+                        .open_tmux(&host, &key, &mut known, size, &name)
+                        .await
+                }
+                None => manager.open(&host, &key, &mut known, size).await,
             }
-            Err(SessionError::HostKey(decision)) => {
-                confirm_host_key(&app, &state, &host, decision).await?
-            }
-            Err(e) => return Err(err(e)),
         }
+    })
+    .await?;
+    let id = Uuid::new_v4();
+    let stale = {
+        let mut sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| "state poisoned".to_string())?;
+        if state.epoch() == epoch {
+            sessions.insert(
+                id,
+                SessionEntry {
+                    handle,
+                    events: Some(events),
+                },
+            );
+            None
+        } else {
+            Some(handle)
+        }
+    };
+    if let Some(handle) = stale {
+        let _ = handle.close().await;
+        return Err("vault was locked while connecting".into());
     }
-    Err("host key could not be verified".into())
+    Ok(id.to_string())
 }
 
-/// Asks the user about an unknown or changed host key and, if accepted, pins it in the
-/// vault before releasing the gate so panes opened in parallel do not ask again.
+/// Names of the tmux sessions running on the host, for the connect picker.
+#[tauri::command]
+pub async fn tmux_sessions(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    host_id: Uuid,
+) -> CmdResult<Vec<String>> {
+    let manager = state.manager.clone();
+    with_host_key(&app, &state, host_id, |host, key, mut known| {
+        let manager = manager.clone();
+        async move { manager.list_tmux(&host, &key, &mut known).await }
+    })
+    .await
+}
+
+/// Asks the user about an unknown host key and, if accepted, pins it in the vault before
+/// releasing the gate so panes opened in parallel do not ask again.
 async fn confirm_host_key(
     app: &AppHandle,
     state: &AppState,
     host: &Host,
-    decision: HostKeyDecision,
+    key_type: String,
+    fingerprint: String,
 ) -> CmdResult<()> {
-    let (key_type, fingerprint, expected) = match decision {
-        HostKeyDecision::Trusted => return Ok(()),
-        HostKeyDecision::NewKey {
-            key_type,
-            fingerprint,
-        } => (key_type, fingerprint, None),
-        HostKeyDecision::Changed {
-            key_type,
-            expected,
-            got,
-        } => (key_type, got, Some(expected)),
-    };
     let addr_port = addr_port(host);
-    let _gate = state.prompt_gate.lock().await;
-
-    let current = state.with_vault(|v| Ok(KnownHosts::new(v.data().known_hosts.clone())))?;
-    if current.decide(&addr_port, &key_type, &fingerprint) == HostKeyDecision::Trusted {
-        return Ok(());
-    }
-
-    let prompt_id = Uuid::new_v4();
-    let (tx, rx) = oneshot::channel();
     state
         .prompts
-        .lock()
-        .map_err(|_| "state poisoned".to_string())?
-        .insert(prompt_id, tx);
-    let prompt = HostKeyPrompt {
-        prompt_id,
-        host_name: host.name.clone(),
-        addr_port: addr_port.clone(),
-        key_type: key_type.clone(),
-        fingerprint: fingerprint.clone(),
-        expected_fingerprint: expected,
-    };
-    if let Err(e) = app.emit("hostkey://prompt", prompt) {
-        forget_prompt(state, prompt_id);
-        return Err(err(e));
-    }
-    if !rx.await.unwrap_or(false) {
-        return Err("host key not accepted".into());
-    }
-    state.mutate(|d| {
-        d.upsert_known_host(KnownHost {
-            addr_port,
-            key_type,
-            fingerprint_sha256: fingerprint,
-        });
-        Ok(())
-    })
+        .ask(
+            || {
+                let known =
+                    state.with_vault(|v| Ok(KnownHosts::new(v.data().known_hosts.clone())))?;
+                match known.decide(&addr_port, &key_type, &fingerprint) {
+                    HostKeyDecision::Trusted => Ok(true),
+                    HostKeyDecision::NewKey { .. } => Ok(false),
+                    HostKeyDecision::Changed { expected, got, .. } => {
+                        Err(changed_message(&addr_port, &expected, &got))
+                    }
+                }
+            },
+            |prompt_id| {
+                let prompt = HostKeyPrompt {
+                    prompt_id,
+                    host_name: host.name.clone(),
+                    addr_port: addr_port.clone(),
+                    key_type: key_type.clone(),
+                    fingerprint: fingerprint.clone(),
+                };
+                app.emit("hostkey://prompt", prompt).map_err(err)
+            },
+            |prompt_id| {
+                let _ = app.emit("hostkey://closed", prompt_id.to_string());
+            },
+            || {
+                state.mutate(|d| {
+                    if d.known_hosts.iter().any(|k| k.addr_port == addr_port) {
+                        return Err(ModelError::DuplicateKnownHost(addr_port.clone()));
+                    }
+                    d.upsert_known_host(KnownHost {
+                        addr_port: addr_port.clone(),
+                        key_type: key_type.clone(),
+                        fingerprint_sha256: fingerprint.clone(),
+                    });
+                    Ok(())
+                })
+            },
+        )
+        .await
+        .map_err(|e| format!("host key not accepted: {e}"))
 }
 
-fn forget_prompt(state: &AppState, prompt_id: Uuid) {
-    if let Ok(mut prompts) = state.prompts.lock() {
-        prompts.remove(&prompt_id);
-    }
+fn changed_message(addr_port: &str, expected: &str, got: &str) -> String {
+    format!(
+        "host key for {addr_port} changed (on record {expected}, presented {got}); if the server was reinstalled, forget its key in the host list"
+    )
+}
+
+/// Drops the pinned key for a host so the next connect asks again. This is the only way
+/// to replace a pinned key: a changed key is never accepted from a prompt.
+#[tauri::command]
+pub fn host_key_forget(state: State<'_, AppState>, host_id: Uuid) -> CmdResult<()> {
+    let host = state.with_vault(|v| {
+        v.data()
+            .host(host_id)
+            .cloned()
+            .ok_or_else(|| "unknown host".to_string())
+    })?;
+    let addr_port = addr_port(&host);
+    state.mutate(|d| {
+        d.remove_known_host(&addr_port);
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -138,13 +228,7 @@ pub fn host_key_confirm(
     prompt_id: Uuid,
     accept: bool,
 ) -> CmdResult<()> {
-    let tx = state
-        .prompts
-        .lock()
-        .map_err(|_| "state poisoned".to_string())?
-        .remove(&prompt_id)
-        .ok_or("no such host key prompt")?;
-    tx.send(accept).map_err(|_| "prompt already closed".to_string())
+    state.prompts.answer(prompt_id, accept)
 }
 
 /// Starts forwarding session output once the frontend has registered its listeners,
@@ -172,10 +256,6 @@ async fn pump(app: AppHandle, id: Uuid, mut events: mpsc::Receiver<SessionEvent>
             SessionEvent::Exit(code) => {
                 finished = true;
                 app.emit(&topic(id, "exit"), code)
-            }
-            SessionEvent::Error(message) => {
-                finished = true;
-                app.emit(&topic(id, "error"), message)
             }
             SessionEvent::Closed => break,
         };
@@ -243,7 +323,5 @@ pub async fn close_all(state: &AppState) {
     for entry in entries {
         let _ = entry.handle.close().await;
     }
-    if let Ok(mut prompts) = state.prompts.lock() {
-        prompts.clear();
-    }
+    state.prompts.clear();
 }

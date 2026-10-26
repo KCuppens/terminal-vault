@@ -11,7 +11,7 @@ async function unlocked(): Promise<Ipc> {
   return ipc;
 }
 
-const hostInput = { name: "web", addr: "10.0.0.1", port: 22, user: "root", key_id: null, tags: ["prod"] };
+const hostInput = { name: "web", addr: "10.0.0.1", port: 22, user: "root", key_id: null, tags: ["prod"], tmux_session: null };
 
 describe("ipc selection", () => {
   it("uses the mock outside Tauri and honours setIpc", async () => {
@@ -55,7 +55,7 @@ describe("mock vault", () => {
   it("never exposes private key material", async () => {
     const ipc = await unlocked();
     const key = await ipc.keysGenerate("laptop");
-    expect(Object.keys(key).sort()).toEqual(["fingerprint", "id", "name", "public"]);
+    expect(Object.keys(key).sort()).toEqual(["fingerprint", "id", "key_type", "name", "public"]);
     await expect(ipc.keysImport("bad", "garbage", null)).rejects.toThrow("valid");
     await expect(
       ipc.keysImport("enc", "-----BEGIN ENCRYPTED PRIVATE KEY-----", null),
@@ -96,7 +96,7 @@ describe("mock sessions", () => {
     const ipc = await unlocked();
     const { host, opened, getPrompt } = await connect(ipc);
     await opened;
-    expect(getPrompt()).toMatchObject({ host_name: "web", expected_fingerprint: null });
+    expect(getPrompt()).toMatchObject({ host_name: "web" });
     await ipc.sessionOpen(host.id, 80, 24);
     expect(getPrompt()?.fingerprint).toBeTruthy();
   });
@@ -139,5 +139,136 @@ describe("mock sessions", () => {
     const host = await ipc.hostsAdd(hostInput);
     await expect(ipc.sessionOpen(host.id, 80, 24)).rejects.toThrow("no key");
     await expect(ipc.sessionAttach("nope")).rejects.toThrow("unknown session");
+  });
+
+  it("asks again after the host key is forgotten", async () => {
+    const ipc = await unlocked();
+    const key = await ipc.keysGenerate("k");
+    const host = await ipc.hostsAdd({ ...hostInput, key_id: key.id });
+    let asked = 0;
+    await ipc.onHostKeyPrompt((p) => {
+      asked += 1;
+      void ipc.hostKeyConfirm(p.prompt_id, true);
+    });
+    await ipc.sessionOpen(host.id, 80, 24);
+    await ipc.sessionOpen(host.id, 80, 24);
+    expect(asked).toBe(1);
+    await ipc.hostKeyForget(host.id);
+    await ipc.sessionOpen(host.id, 80, 24);
+    expect(asked).toBe(2);
+  });
+
+  it("tells listeners when a declined prompt is closed", async () => {
+    const ipc = await unlocked();
+    const key = await ipc.keysGenerate("k");
+    const host = await ipc.hostsAdd({ ...hostInput, key_id: key.id });
+    const closed: string[] = [];
+    let shown: string | undefined;
+    await ipc.onHostKeyPromptClosed((id) => closed.push(id));
+    await ipc.onHostKeyPrompt((p) => {
+      shown = p.prompt_id;
+      void ipc.hostKeyConfirm(p.prompt_id, false);
+    });
+    await expect(ipc.sessionOpen(host.id, 80, 24)).rejects.toThrow("not accepted");
+    expect(closed).toEqual([shown]);
+  });
+
+  it("applies a tmux override: empty is a plain shell, a name is listed for the host", async () => {
+    const ipc = await unlocked();
+    const key = await ipc.keysGenerate("k");
+    const host = await ipc.hostsAdd({ ...hostInput, key_id: key.id, tmux_session: "main" });
+    await ipc.onHostKeyPrompt((p) => void ipc.hostKeyConfirm(p.prompt_id, true));
+    const text = async (id: string) => {
+      const chunks: Uint8Array[] = [];
+      await ipc.onSession(id, { data: (b) => chunks.push(b), exit: () => {}, error: () => {} });
+      await ipc.sessionAttach(id);
+      return new TextDecoder().decode(Uint8Array.from(chunks.flatMap((c) => [...c])));
+    };
+    expect(await text(await ipc.sessionOpen(host.id, 80, 24))).toContain("tmux main");
+    expect(await text(await ipc.sessionOpen(host.id, 80, 24, ""))).not.toContain("tmux");
+    await ipc.sessionOpen(host.id, 80, 24, "work");
+    expect(await ipc.tmuxSessions(host.id)).toEqual(["main", "work"]);
+    await expect(ipc.sessionOpen(host.id, 80, 24, "bad name")).rejects.toThrow("invalid tmux");
+  });
+
+  it("refuses an invalid default tmux name on save", async () => {
+    const ipc = await unlocked();
+    await expect(ipc.hostsAdd({ ...hostInput, tmux_session: "a b" })).rejects.toThrow("tmux");
+  });
+});
+
+describe("mock settings", () => {
+  it("returns defaults and rejects out-of-range values", async () => {
+    const ipc = createMockIpc();
+    const s = await ipc.settingsGet();
+    expect(s.auto_lock_minutes).toBe(15);
+    expect(await ipc.settingsSave({ ...s, font_size: 18 })).toMatchObject({ font_size: 18 });
+    expect((await ipc.settingsGet()).font_size).toBe(18);
+    await expect(ipc.settingsSave({ ...s, font_size: 7 })).rejects.toThrow("font size");
+    await expect(ipc.settingsSave({ ...s, auto_lock_minutes: 241 })).rejects.toThrow("auto-lock");
+    await expect(ipc.settingsSave({ ...s, scrollback: 99 })).rejects.toThrow("scrollback");
+    await expect(ipc.settingsSave({ ...s, ui_scale: 200 })).rejects.toThrow("ui scale");
+    await expect(ipc.settingsSave({ ...s, font_family: " " })).rejects.toThrow("font family");
+    expect((await ipc.settingsGet()).font_size).toBe(18);
+  });
+});
+
+describe("mock keys and hosts extras", () => {
+  it("refuses to remove a key that hosts use", async () => {
+    const ipc = await unlocked();
+    const key = await ipc.keysGenerate("k", "me@laptop");
+    expect(key.key_type).toBe("ed25519");
+    expect(key.public).toContain("me@laptop");
+    await ipc.hostsAdd({ ...hostInput, name: "a", key_id: key.id });
+    await ipc.hostsAdd({ ...hostInput, name: "b", key_id: key.id });
+    await expect(ipc.keysRemove(key.id)).rejects.toThrow("key is used by 2 hosts");
+    const lone = await ipc.keysGenerate("lone");
+    await ipc.keysRemove(lone.id);
+    await expect(ipc.keysRemove(lone.id)).rejects.toThrow("unknown key");
+  });
+
+  it("exports hosts and offers ssh config candidates", async () => {
+    const ipc = await unlocked();
+    expect(await ipc.hostsExport()).toMatch(/exports\/hosts-\d{8}-\d{6}\.json$/);
+    expect(await ipc.hostsImportSshConfig()).toHaveLength(2);
+  });
+});
+
+describe("mock vault management", () => {
+  it("throttles unlock after three wrong passphrases", async () => {
+    const ipc = await unlocked();
+    await ipc.vaultLock();
+    for (let i = 0; i < 3; i += 1) {
+      await expect(ipc.vaultUnlock("nope")).rejects.toThrow("wrong passphrase");
+    }
+    await expect(ipc.vaultUnlock("correct horse battery")).rejects.toThrow(/^too many attempts: retry in [1-5]s$/);
+  });
+
+  it("backs up, changes the passphrase and restores", async () => {
+    const ipc = await unlocked();
+    await ipc.hostsAdd(hostInput);
+    const backup = await ipc.vaultBackup();
+    expect(backup.name).toMatch(/^vault-.*\.bak$/);
+    expect(backup.path).toContain("/backups/");
+    await ipc.hostsRemove((await ipc.hostsList())[0]!.id);
+    await ipc.vaultChangePassphrase("correct horse battery", "second");
+    await expect(ipc.vaultChangePassphrase("bad", "x")).rejects.toThrow("wrong passphrase");
+    expect((await ipc.vaultBackups()).length).toBeGreaterThanOrEqual(2);
+    await ipc.vaultRestore(backup.name);
+    await expect(ipc.hostsList()).rejects.toThrow("locked");
+    await ipc.vaultUnlock("correct horse battery");
+    expect(await ipc.hostsList()).toHaveLength(1);
+    await expect(ipc.vaultRestore("vault-missing.bak")).rejects.toThrow("does not exist");
+  });
+
+  it("deletes the vault and reports its location while locked", async () => {
+    const ipc = await unlocked();
+    const info = await ipc.vaultInfo();
+    expect(info.path.startsWith(info.dir)).toBe(true);
+    await ipc.vaultDelete();
+    expect(await ipc.vaultExists()).toBe(false);
+    expect(await ipc.vaultBackups()).toEqual([]);
+    await ipc.vaultCreate("fresh");
+    expect(await ipc.hostsList()).toEqual([]);
   });
 });

@@ -11,7 +11,7 @@ use zeroize::Zeroizing;
 
 use crate::model::{ModelError, VaultData};
 
-const MAGIC: &[u8; 8] = b"TVAULT\0\0";
+pub(crate) const MAGIC: &[u8; 8] = b"TVAULT\0\0";
 const FORMAT_VERSION: u16 = 1;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
@@ -135,7 +135,7 @@ fn u32_at(buf: &[u8], at: usize) -> Result<u32, VaultError> {
         .ok_or(VaultError::Corrupt("truncated header"))
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -281,6 +281,22 @@ impl Vault {
 
     pub fn data_mut(&mut self) -> &mut VaultData {
         &mut self.data
+    }
+
+    /// Applies `f` and saves. If `f` or the save fails, the in-memory data is restored so
+    /// memory never gets ahead of what is on disk.
+    pub fn update<T>(
+        &mut self,
+        f: impl FnOnce(&mut VaultData) -> Result<T, ModelError>,
+    ) -> Result<T, VaultError> {
+        let backup = self.data.clone();
+        let outcome = f(&mut self.data)
+            .map_err(VaultError::from)
+            .and_then(|out| self.save().map(|()| out));
+        if outcome.is_err() {
+            self.data = backup;
+        }
+        outcome
     }
 
     pub fn save(&mut self) -> Result<(), VaultError> {

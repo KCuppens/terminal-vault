@@ -1,87 +1,212 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
-import { getIpc } from "../ipc";
-import { passphraseStrength } from "../lib/strength";
+import { getIpc, type BackupInfo, type VaultInfo } from "../ipc";
+import { errorText } from "../lib/errors";
+import { formatBytes, formatDateTime } from "../lib/format";
+import { classifyUnlockError } from "../lib/unlockError";
+import { AuthIcon } from "./authIcons";
+import { AuthPassword, Brand } from "./authParts";
+import { useServices } from "./services";
 
 interface Props {
-  exists: boolean;
-  onUnlocked(): void;
+  info: VaultInfo | null;
+  onUnlocked(): void | Promise<void>;
 }
 
-export function Unlock({ exists, onUnlocked }: Props) {
+type Problem =
+  | { kind: "wrong" }
+  | { kind: "corrupt" }
+  | { kind: "other"; message: string };
+
+export function Unlock({ info, onUnlocked }: Props) {
+  const { toast, copy } = useServices();
   const [pass, setPass] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [shown, setShown] = useState(false);
   const [busy, setBusy] = useState(false);
-  const strength = passphraseStrength(pass);
-  const creating = !exists;
+  const [problem, setProblem] = useState<Problem | null>(null);
+  const [retryAt, setRetryAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [backups, setBackups] = useState<BackupInfo[] | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const errorId = useId();
+
+  const waitSeconds = retryAt === null ? 0 : Math.max(0, Math.ceil((retryAt - now) / 1000));
+  const throttled = waitSeconds > 0;
+  const corrupt = problem?.kind === "corrupt";
+
+  useEffect(() => {
+    if (retryAt === null) return;
+    const timer = setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      if (t >= retryAt) setRetryAt(null);
+    }, 500);
+    return () => clearInterval(timer);
+  }, [retryAt]);
+
+  useEffect(() => {
+    if (!corrupt) return;
+    let live = true;
+    getIpc()
+      .vaultBackups()
+      .then((list) => live && setBackups(list))
+      .catch(() => live && setBackups([]));
+    return () => {
+      live = false;
+    };
+  }, [corrupt]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (creating && pass !== confirm) {
-      setError("Passphrases do not match");
-      return;
-    }
+    if (busy || throttled || pass === "") return;
     setBusy(true);
-    setError(null);
+    setProblem(null);
     try {
-      const ipc = getIpc();
-      if (creating) await ipc.vaultCreate(pass);
-      else await ipc.vaultUnlock(pass);
+      await getIpc().vaultUnlock(pass);
       setPass("");
-      setConfirm("");
-      onUnlocked();
+      await onUnlocked();
     } catch (err) {
-      setError(String(err));
-    } finally {
+      const found = classifyUnlockError(errorText(err));
+      if (found.kind === "throttled") {
+        const t = Date.now();
+        setNow(t);
+        setRetryAt(t + found.seconds * 1000);
+      } else {
+        setProblem(found);
+      }
       setBusy(false);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+      });
     }
   }
 
+  async function restore(backup: BackupInfo) {
+    setRestoring(true);
+    try {
+      await getIpc().vaultRestore(backup.name);
+      setProblem(null);
+      setBackups(null);
+      toast({
+        message: "Backup restored.",
+        detail: "Unlock with the passphrase the backup was made with.",
+        tone: "success",
+        seconds: 8,
+      });
+    } catch (err) {
+      toast({ message: errorText(err), tone: "error" });
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  const wrong = problem?.kind === "wrong";
+  const message = throttled ? null : wrong ? "Wrong passphrase" : problem?.kind === "other" ? problem.message : null;
+  const newest = backups?.[0];
+
   return (
-    <div className="center-screen">
-      <form className="card unlock" onSubmit={submit}>
-        <h1>Terminal Vault</h1>
-        <p className="muted">
-          {creating
-            ? "Choose a passphrase to create your local encrypted vault. It cannot be recovered."
-            : "Enter your passphrase to unlock the vault."}
-        </p>
-        <label>
-          Passphrase
-          <input
-            type="password"
-            autoFocus
-            autoComplete={creating ? "new-password" : "current-password"}
-            value={pass}
-            onChange={(e) => setPass(e.target.value)}
-          />
-        </label>
-        {creating && (
+    <div className="auth-screen av-screen">
+      <form
+        className={corrupt ? "av-card av-unlock corrupt" : "av-card av-unlock"}
+        onSubmit={(e) => void submit(e)}
+        aria-busy={busy}
+      >
+        <Brand variant={corrupt ? "compact" : "stack"} />
+        {corrupt ? (
           <>
-            <div className="strength" data-score={strength.score}>
-              <div className="strength-bar">
-                <span style={{ width: `${(strength.score + 1) * 20}%` }} />
+            <div className="av-alert" role="alert">
+              <AuthIcon name="alertCircle" size={29} className="av-alert-icon" />
+              <div>
+                <strong>This vault file can't be read.</strong>
+                <span>It may be corrupted or from a newer version.</span>
               </div>
-              <small>
-                {pass === "" ? strength.hint : `${strength.label}. ${strength.hint}`}
-              </small>
             </div>
-            <label>
-              Confirm passphrase
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-              />
-            </label>
+            <div className="av-actions">
+              {info && (
+                <button
+                  type="button"
+                  className="av-action tint"
+                  onClick={() => void copy(info.path, { label: "Path copied." })}
+                >
+                  <AuthIcon name="copy" size={20} />
+                  Copy path
+                </button>
+              )}
+              <button
+                type="button"
+                className="av-action"
+                disabled={restoring || newest === undefined}
+                title={
+                  newest
+                    ? `${formatDateTime(newest.modified)}, ${formatBytes(newest.bytes)}`
+                    : backups === null
+                      ? "Looking for backups..."
+                      : "No backups found next to the vault."
+                }
+                onClick={() => newest && void restore(newest)}
+              >
+                <AuthIcon name="history" size={20} />
+                {restoring ? "Restoring..." : "Restore from backup"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <AuthPassword
+              inputRef={inputRef}
+              id="unlock-pass"
+              label="Passphrase"
+              labelHidden
+              placeholder="Passphrase"
+              value={pass}
+              onChange={(v) => {
+                setPass(v);
+                if (problem?.kind === "wrong" || problem?.kind === "other") setProblem(null);
+              }}
+              shown={shown}
+              onToggleShown={() => setShown((s) => !s)}
+              autoComplete="current-password"
+              autoFocus
+              invalid={wrong || problem?.kind === "other" || throttled}
+              disabled={busy}
+              describedBy={message ? errorId : undefined}
+            />
+            {message && (
+              <p className="av-msg error" id={errorId} role="alert">
+                {message}
+              </p>
+            )}
+            {throttled && (
+              <p className="av-msg throttle" role="status">
+                <AuthIcon name="clock" size={22} />
+                Try again in {waitSeconds} s
+              </p>
+            )}
+            <button
+              type="submit"
+              className={busy ? "av-submit busy" : "av-submit"}
+              disabled={busy || throttled}
+            >
+              {busy ? (
+                <>
+                  <span className="av-spin" aria-hidden="true" /> Unlocking...
+                </>
+              ) : (
+                <>
+                  Unlock
+                  <AuthIcon name="arrowRight" size={24} className="av-submit-arrow" />
+                </>
+              )}
+            </button>
           </>
         )}
-        {error && <p className="error">{error}</p>}
-        <button className="primary" type="submit" disabled={busy || pass === ""}>
-          {busy ? "Deriving key…" : creating ? "Create vault" : "Unlock"}
-        </button>
+        {info && (
+          <div className="av-path">
+            <AuthIcon name="folder" size={corrupt ? 24 : 26} />
+            <span>vault: {info.path}</span>
+          </div>
+        )}
       </form>
     </div>
   );

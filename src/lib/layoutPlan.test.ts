@@ -12,6 +12,7 @@ const host = (id: string): Host => ({
   user: "root",
   key_id: null,
   tags: [],
+  tmux_session: null,
 });
 
 function counter() {

@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::keys::KeyError;
-use crate::model::{Host, KeyEntry, KnownHost};
+use crate::model::{valid_tmux_name, Host, KeyEntry, KnownHost};
 
 const CHUNK_BYTES: usize = 16 * 1024;
 const COALESCE_WINDOW: Duration = Duration::from_millis(4);
@@ -29,7 +29,6 @@ pub enum SessionEvent {
     Data(Vec<u8>),
     Exit(u32),
     Closed,
-    Error(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,7 +254,72 @@ impl Default for SessionManager {
     }
 }
 
+/// What to start on the channel once authenticated.
+enum Launch<'a> {
+    Shell(PtySize),
+    Tmux(&'a str, PtySize),
+    Exec(&'a str),
+}
+
+/// Directories searched for `tmux` besides the login PATH; a non-interactive SSH command often
+/// lacks them (Homebrew, MacPorts, user installs).
+macro_rules! tmux_path {
+    () => {
+        r#"PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:/opt/local/bin:$HOME/.local/bin"; export PATH"#
+    };
+}
+
+/// Command that opens `name` as one more window of a tmux session, so every pane on a host
+/// gets its own window while the session survives disconnects. It is wrapped in `/bin/sh -c`
+/// so it works whatever the account's login shell is.
+///
+/// Whichever pane creates the session (`new-session -d` is atomic, so exactly one pane wins
+/// even when several open at once) attaches it directly. The others attach a grouped session
+/// (shared windows, own current window) and add a window; that group member goes away when its
+/// pane closes. The window a pane added stays, so reconnecting leaves the old window behind in
+/// the session. Without tmux it emits the private sequence `ESC ] 777 ; tv-no-tmux BEL` (so the
+/// UI can flag the pane), prints a notice and starts a login shell. `name` must pass
+/// [`valid_tmux_name`], which is why it needs no quoting.
+pub fn tmux_command(name: &str) -> String {
+    format!(
+        "exec /bin/sh -c '{path}; \
+         if ! command -v tmux >/dev/null 2>&1; then \
+         printf \"\\033]777;tv-no-tmux\\007\"; \
+         echo \"terminal-vault: tmux is not installed on this server, using a plain shell\"; \
+         exec \"${{SHELL:-/bin/sh}}\" -l; fi; \
+         if tmux new-session -d -s {name} 2>/dev/null; then exec tmux attach-session -t ={name}; fi; \
+         exec tmux new-session -t ={name} \\; new-window \\; set-option destroy-unattached on'"
+        , path = tmux_path!()
+    )
+}
+
+/// Command that prints `name:group` per tmux session (tmux never puts ':' in a name), or
+/// nothing when tmux is missing or idle.
+const TMUX_LIST_COMMAND: &str = concat!(
+    r#"exec /bin/sh -c '"#,
+    tmux_path!(),
+    "; ",
+    r#"tmux list-sessions -F "#,
+    r##""#{session_name}:#{session_group}" 2>/dev/null || true'"##
+);
+const EXEC_OUTPUT_LIMIT: usize = 64 * 1024;
+
+/// Picks the session names to offer from `tmux list-sessions -F '#{session_name}:#{session_group}'`
+/// output. Members of a session group other than the one carrying the group's name are the
+/// per-pane sessions this app creates, so they are left out; names that are not safe to put
+/// in a command are dropped too.
+pub fn tmux_session_names(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (name, group) = line.trim().split_once(':').unwrap_or((line.trim(), ""));
+            (valid_tmux_name(name) && (group.is_empty() || group == name)).then(|| name.to_string())
+        })
+        .collect()
+}
+
 impl SessionManager {
+    /// Opens a plain login shell.
     pub async fn open(
         &self,
         host: &Host,
@@ -263,6 +327,85 @@ impl SessionManager {
         known: &mut KnownHosts,
         size: PtySize,
     ) -> Result<(SessionHandle, mpsc::Receiver<SessionEvent>), SessionError> {
+        self.open_launch(host, key, known, Launch::Shell(size))
+            .await
+    }
+
+    /// Attaches to the tmux session `name`, creating it when missing.
+    pub async fn open_tmux(
+        &self,
+        host: &Host,
+        key: &KeyEntry,
+        known: &mut KnownHosts,
+        size: PtySize,
+        name: &str,
+    ) -> Result<(SessionHandle, mpsc::Receiver<SessionEvent>), SessionError> {
+        if !valid_tmux_name(name) {
+            return Err(SessionError::Channel(format!(
+                "invalid tmux session name {name:?}"
+            )));
+        }
+        self.open_launch(host, key, known, Launch::Tmux(name, size))
+            .await
+    }
+
+    async fn open_launch(
+        &self,
+        host: &Host,
+        key: &KeyEntry,
+        known: &mut KnownHosts,
+        launch: Launch<'_>,
+    ) -> Result<(SessionHandle, mpsc::Receiver<SessionEvent>), SessionError> {
+        let (conn, channel) = self.connect(host, key, known, launch).await?;
+        let (read_half, writer) = channel.split();
+        let (tx, rx) = mpsc::channel(EVENT_QUEUE);
+        tokio::spawn(pump(read_half, tx));
+        Ok((
+            SessionHandle {
+                inner: Arc::new(Inner { writer, conn }),
+            },
+            rx,
+        ))
+    }
+
+    /// Names of the tmux sessions running on the server, empty when there are none.
+    pub async fn list_tmux(
+        &self,
+        host: &Host,
+        key: &KeyEntry,
+        known: &mut KnownHosts,
+    ) -> Result<Vec<String>, SessionError> {
+        let (conn, mut channel) = self
+            .connect(host, key, known, Launch::Exec(TMUX_LIST_COMMAND))
+            .await?;
+        let mut out = Vec::new();
+        let read = async {
+            while let Some(msg) = channel.wait().await {
+                match msg {
+                    ChannelMsg::Data { data } => {
+                        if out.len() + data.len() > EXEC_OUTPUT_LIMIT {
+                            break;
+                        }
+                        out.extend_from_slice(&data);
+                    }
+                    ChannelMsg::Close => break,
+                    _ => {}
+                }
+            }
+        };
+        let finished = tokio::time::timeout(self.connect_timeout, read).await;
+        let _ = conn.disconnect(Disconnect::ByApplication, "", "en").await;
+        finished.map_err(|_| SessionError::Timeout)?;
+        Ok(tmux_session_names(&String::from_utf8_lossy(&out)))
+    }
+
+    async fn connect(
+        &self,
+        host: &Host,
+        key: &KeyEntry,
+        known: &mut KnownHosts,
+        launch: Launch<'_>,
+    ) -> Result<(Handle<Client>, russh::Channel<Msg>), SessionError> {
         let addr_port = addr_port(host);
         let private = key.private_key()?;
         let observed = Arc::new(Mutex::new(None));
@@ -301,14 +444,21 @@ impl SessionManager {
                 .channel_open_session()
                 .await
                 .map_err(|e| SessionError::Channel(e.to_string()))?;
-            channel
-                .request_pty(false, TERM, size.cols, size.rows, 0, 0, &[])
-                .await
-                .map_err(|e| SessionError::Channel(e.to_string()))?;
-            channel
-                .request_shell(false)
-                .await
-                .map_err(|e| SessionError::Channel(e.to_string()))?;
+            let chan_err = |e: russh::Error| SessionError::Channel(e.to_string());
+            if let Launch::Shell(size) | Launch::Tmux(_, size) = launch {
+                channel
+                    .request_pty(false, TERM, size.cols, size.rows, 0, 0, &[])
+                    .await
+                    .map_err(chan_err)?;
+            }
+            match launch {
+                Launch::Shell(_) => channel.request_shell(false).await.map_err(chan_err)?,
+                Launch::Tmux(name, _) => channel
+                    .exec(false, tmux_command(name))
+                    .await
+                    .map_err(chan_err)?,
+                Launch::Exec(cmd) => channel.exec(false, cmd).await.map_err(chan_err)?,
+            }
             Ok((conn, channel))
         };
 
@@ -327,16 +477,7 @@ impl SessionManager {
         if let Some(d) = decision {
             known.record(&addr_port, &d);
         }
-
-        let (read_half, writer) = channel.split();
-        let (tx, rx) = mpsc::channel(EVENT_QUEUE);
-        tokio::spawn(pump(read_half, tx));
-        Ok((
-            SessionHandle {
-                inner: Arc::new(Inner { writer, conn }),
-            },
-            rx,
-        ))
+        Ok((conn, channel))
     }
 }
 

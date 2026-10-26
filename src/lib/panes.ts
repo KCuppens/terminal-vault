@@ -1,7 +1,7 @@
 import type { SplitDir } from "../ipc/types";
 
 export type Pane =
-  | { kind: "leaf"; id: string; hostId: string | null }
+  | { kind: "leaf"; id: string; hostId: string | null; tmux?: string }
   | { kind: "split"; id: string; dir: SplitDir; ratio: number; a: Pane; b: Pane };
 
 export interface TabState {
@@ -32,7 +32,47 @@ export type Action =
   | { type: "closePane"; paneId?: string }
   | { type: "focusPane"; paneId: string }
   | { type: "setRatio"; splitId: string; ratio: number }
-  | { type: "assignHost"; paneId: string; hostId: string; title: string };
+  | { type: "assignHost"; paneId: string; hostId: string; title: string; tmux?: string }
+  | { type: "arrange"; mode: ArrangeMode; splitIds: string[] };
+
+export type ArrangeMode = "columns" | "grid" | "rows";
+
+function chain(items: Pane[], dir: SplitDir, ids: string[]): Pane {
+  const [first, ...rest] = items;
+  if (first === undefined) throw new Error("nothing to arrange");
+  if (rest.length === 0) return first;
+  const id = ids.shift() ?? crypto.randomUUID();
+  return { kind: "split", id, dir, ratio: 1 / items.length, a: first, b: chain(rest, dir, ids) };
+}
+
+/** Re-tiles the panes of one tab; the leaves keep their identity so running terminals stay mounted. */
+export function arrangePanes(root: Pane, mode: ArrangeMode, splitIds: string[]): Pane {
+  const all = leaves(root);
+  const ids = [...splitIds];
+  if (mode === "columns") return chain(all, "H", ids);
+  if (mode === "rows") return chain(all, "V", ids);
+  const cols = Math.ceil(Math.sqrt(all.length));
+  const rows: Pane[] = [];
+  for (let i = 0; i < all.length; i += cols) rows.push(chain(all.slice(i, i + cols), "H", ids));
+  return chain(rows, "V", ids);
+}
+
+function distinct(values: number[]): number {
+  return new Set(values.map((v) => Math.round(v * 1000))).size;
+}
+
+/** Column and row counts of the tiled panes, e.g. 2 by 2. */
+export function gridSize(root: Pane): { cols: number; rows: number } {
+  const rects = computeGeometry(root).leaves.map((l) => l.rect);
+  return { cols: distinct(rects.map((r) => r.x)), rows: distinct(rects.map((r) => r.y)) };
+}
+
+export function arrangement(root: Pane): ArrangeMode {
+  const { cols, rows } = gridSize(root);
+  if (rows === 1) return "columns";
+  if (cols === 1) return "rows";
+  return "grid";
+}
 
 export function leaves(pane: Pane): Extract<Pane, { kind: "leaf" }>[] {
   return pane.kind === "leaf" ? [pane] : [...leaves(pane.a), ...leaves(pane.b)];
@@ -152,10 +192,12 @@ export function workspaceReducer(ws: Workspace, action: Action): Workspace {
         ...t,
         title: hadHosts ? t.title : action.title,
         root: mapPane(t.root, (p) =>
-          p.kind === "leaf" && p.id === action.paneId ? { ...p, hostId: action.hostId } : p,
+          p.kind === "leaf" && p.id === action.paneId ? { ...p, hostId: action.hostId, tmux: action.tmux } : p,
         ),
       }));
     }
+    case "arrange":
+      return updateTab(ws, ws.active ?? "", (t) => ({ ...t, root: arrangePanes(t.root, action.mode, action.splitIds) }));
   }
 }
 
@@ -175,7 +217,7 @@ export interface Divider {
 }
 
 export interface PaneGeometry {
-  leaves: { id: string; hostId: string | null; rect: Rect }[];
+  leaves: { id: string; hostId: string | null; tmux?: string; rect: Rect }[];
   dividers: Divider[];
 }
 
@@ -185,7 +227,9 @@ export interface PaneGeometry {
  * `H` places children side by side, `V` stacks them.
  */
 export function computeGeometry(root: Pane, rect: Rect = { x: 0, y: 0, w: 1, h: 1 }): PaneGeometry {
-  if (root.kind === "leaf") return { leaves: [{ id: root.id, hostId: root.hostId, rect }], dividers: [] };
+  if (root.kind === "leaf") {
+    return { leaves: [{ id: root.id, hostId: root.hostId, tmux: root.tmux, rect }], dividers: [] };
+  }
   const [ra, rb] =
     root.dir === "H"
       ? [
