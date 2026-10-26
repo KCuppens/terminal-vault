@@ -613,6 +613,13 @@ function Shell({ settings, onSettings }: { settings: Settings; onSettings(next: 
                 onSplit={split}
                 onSaveLayout={() => setDialog({ kind: "saveLayout" })}
                 onOpenLayout={openLayout}
+                onMergeTabs={(sourceTabId, targetTabId) => {
+                  setView("terminals");
+                  dispatch({ type: "mergeTab", sourceTabId, targetTabId, splitId: uuid() });
+                }}
+                onReorderTabs={(sourceTabId, targetTabId) => {
+                  dispatch({ type: "reorderTab", sourceTabId, targetTabId });
+                }}
               />
               <div className="stage">
                 {workspace.tabs.map((t) => (

@@ -118,6 +118,40 @@ describe("workspaceReducer", () => {
     expect(ws.active).toBe("t9");
     expect(run([{ type: "openTabs", tabs: [] }], oneTab)).toBe(oneTab);
   });
+  it("reorderTab moves tabs in tablist order", () => {
+    const ws2 = run([
+      { type: "newTab", tabId: "t2", paneId: "p2" },
+      { type: "newTab", tabId: "t3", paneId: "p3" },
+    ], oneTab);
+    expect(ws2.tabs.map((t) => t.id)).toEqual(["t1", "t2", "t3"]);
+    const reordered = run([{ type: "reorderTab", sourceTabId: "t3", targetTabId: "t1" }], ws2);
+    expect(reordered.tabs.map((t) => t.id)).toEqual(["t3", "t1", "t2"]);
+  });
+
+  it("mergeTab combines leaves into a split layout and closes source tab", () => {
+    const ws2 = run([
+      { type: "newTab", tabId: "t2", paneId: "p2" },
+    ], oneTab);
+    const merged = run([{ type: "mergeTab", sourceTabId: "t2", targetTabId: "t1", splitId: "ms1" }], ws2);
+    expect(merged.tabs.map((t) => t.id)).toEqual(["t1"]);
+    expect(merged.active).toBe("t1");
+    expect(leaves(merged.tabs[0]!.root).map((l) => l.id)).toEqual(["p1", "p2"]);
+  });
+
+  it("merging multiple tabs builds a tiled grid for 6 terminals", () => {
+    let ws = oneTab;
+    for (let i = 2; i <= 6; i++) {
+      ws = run([{ type: "newTab", tabId: `t${i}`, paneId: `p${i}` }], ws);
+    }
+    expect(ws.tabs).toHaveLength(6);
+    // Merge t2, t3, t4, t5, t6 all into t1
+    for (let i = 2; i <= 6; i++) {
+      ws = run([{ type: "mergeTab", sourceTabId: `t${i}`, targetTabId: "t1", splitId: `ms${i}` }], ws);
+    }
+    expect(ws.tabs).toHaveLength(1);
+    const allLeaves = leaves(ws.tabs[0]!.root);
+    expect(allLeaves).toHaveLength(6);
+  });
 });
 
 describe("computeGeometry", () => {

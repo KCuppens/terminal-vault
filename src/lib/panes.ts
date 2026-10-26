@@ -33,7 +33,9 @@ export type Action =
   | { type: "focusPane"; paneId: string }
   | { type: "setRatio"; splitId: string; ratio: number }
   | { type: "assignHost"; paneId: string; hostId: string; title: string; tmux?: string }
-  | { type: "arrange"; mode: ArrangeMode; splitIds: string[] };
+  | { type: "arrange"; mode: ArrangeMode; splitIds: string[] }
+  | { type: "mergeTab"; sourceTabId: string; targetTabId: string; splitId: string; mode?: ArrangeMode }
+  | { type: "reorderTab"; sourceTabId: string; targetTabId: string };
 
 export type ArrangeMode = "columns" | "grid" | "rows";
 
@@ -198,6 +200,39 @@ export function workspaceReducer(ws: Workspace, action: Action): Workspace {
     }
     case "arrange":
       return updateTab(ws, ws.active ?? "", (t) => ({ ...t, root: arrangePanes(t.root, action.mode, action.splitIds) }));
+    case "reorderTab": {
+      if (action.sourceTabId === action.targetTabId) return ws;
+      const srcIndex = ws.tabs.findIndex((t) => t.id === action.sourceTabId);
+      const tgtIndex = ws.tabs.findIndex((t) => t.id === action.targetTabId);
+      if (srcIndex < 0 || tgtIndex < 0) return ws;
+      const nextTabs = [...ws.tabs];
+      const [moved] = nextTabs.splice(srcIndex, 1);
+      if (!moved) return ws;
+      nextTabs.splice(tgtIndex, 0, moved);
+      return { ...ws, tabs: nextTabs };
+    }
+    case "mergeTab": {
+      if (action.sourceTabId === action.targetTabId) return ws;
+      const srcTab = ws.tabs.find((t) => t.id === action.sourceTabId);
+      const tgtTab = ws.tabs.find((t) => t.id === action.targetTabId);
+      if (!srcTab || !tgtTab) return ws;
+
+      // Collect all terminal leaves from both tabs
+      const allLeaves = [...leaves(tgtTab.root), ...leaves(srcTab.root)];
+      // Arrange them nicely (auto-grid: 2 -> side-by-side, 3 -> grid, 4 -> 2x2, 6 -> 3x2)
+      const mode = action.mode ?? (allLeaves.length <= 2 ? "columns" : "grid");
+      const newRoot = arrangePanes(
+        { kind: "split", id: action.splitId, dir: "H", ratio: 0.5, a: tgtTab.root, b: srcTab.root },
+        mode,
+        [],
+      );
+
+      // Update target tab with merged root, and remove source tab
+      const updatedTabs = ws.tabs
+        .filter((t) => t.id !== action.sourceTabId)
+        .map((t) => (t.id === action.targetTabId ? { ...t, root: newRoot, focus: srcTab.focus || t.focus } : t));
+      return { tabs: updatedTabs, active: action.targetTabId };
+    }
   }
 }
 

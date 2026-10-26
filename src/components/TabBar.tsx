@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from "react";
+import { useState, type KeyboardEvent } from "react";
 
 import type { Layout, SplitDir } from "../ipc";
 import { arrangement, gridSize, type ArrangeMode, type Pane, type TabState } from "../lib/panes";
@@ -19,8 +19,9 @@ interface Props {
   onSplit(dir: SplitDir): void;
   onSaveLayout(): void;
   onOpenLayout(layout: Layout): void;
+  onMergeTabs?(sourceTabId: string, targetTabId: string): void;
+  onReorderTabs?(sourceTabId: string, targetTabId: string): void;
 }
-
 const tabDomId = (id: string) => `tab-${id}`;
 
 const ARRANGE: { mode: ArrangeMode; label: string; icon: IconName }[] = [
@@ -42,7 +43,11 @@ export function TabBar({
   onSplit,
   onSaveLayout,
   onOpenLayout,
+  onMergeTabs,
+  onReorderTabs,
 }: Props) {
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; action: "merge" | "reorder" } | null>(null);
   function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
     const index = tabs.findIndex((t) => t.id === active);
     if (index < 0) return;
@@ -79,8 +84,61 @@ export function TabBar({
       <div className="tabs" role="tablist" aria-label="Terminals" onKeyDown={onKeyDown}>
         {tabs.map((tab) => {
           const selected = tab.id === active;
+          const isDragging = draggingId === tab.id;
+          const isTarget = dropTarget?.id === tab.id;
+          const targetAction = isTarget ? dropTarget?.action : null;
+          const className = [
+            "tab",
+            selected ? "active" : "",
+            isDragging ? "dragging" : "",
+            targetAction === "merge" ? "drop-merge" : "",
+            targetAction === "reorder" ? "drop-reorder" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+
           return (
-            <div key={tab.id} className={selected ? "tab active" : "tab"}>
+            <div
+              key={tab.id}
+              className={className}
+              draggable
+              onDragStart={(e) => {
+                setDraggingId(tab.id);
+                e.dataTransfer.setData("text/plain", tab.id);
+                e.dataTransfer.effectAllowed = "move";
+              }}
+              onDragEnd={() => {
+                setDraggingId(null);
+                setDropTarget(null);
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                if (!draggingId || draggingId === tab.id) return;
+                const rect = e.currentTarget.getBoundingClientRect();
+                const offset = e.clientX - rect.left;
+                const ratio = offset / rect.width;
+                const action = ratio < 0.2 || ratio > 0.8 ? "reorder" : "merge";
+                setDropTarget({ id: tab.id, action });
+                e.dataTransfer.dropEffect = "move";
+              }}
+              onDragLeave={(e) => {
+                if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                if (dropTarget?.id === tab.id) setDropTarget(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const sourceId = draggingId || e.dataTransfer.getData("text/plain");
+                const targetAction = dropTarget?.action ?? "merge";
+                setDraggingId(null);
+                setDropTarget(null);
+                if (!sourceId || sourceId === tab.id) return;
+                if (targetAction === "reorder") {
+                  onReorderTabs?.(sourceId, tab.id);
+                } else {
+                  onMergeTabs?.(sourceId, tab.id);
+                }
+              }}
+            >
               <button
                 type="button"
                 role="tab"

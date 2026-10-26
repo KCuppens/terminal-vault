@@ -1239,6 +1239,22 @@ svg {
   font-weight: 500;
 }
 
+.tab.dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+.tab.drop-merge {
+  outline: 2px dashed #1d72e8;
+  outline-offset: -2px;
+  background: #142a4a;
+}
+
+.tab.drop-reorder {
+  border-left: 3px solid #1d72e8;
+  padding-left: 0.2rem;
+}
+
 .tab .dot {
   width: 0.9rem;
   height: 0.9rem;

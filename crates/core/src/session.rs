@@ -292,8 +292,10 @@ pub fn tmux_command(name: &str) -> String {
          printf \"\\033]777;tv-no-tmux\\007\"; \
          echo \"terminal-vault: tmux is not installed on this server, using a plain shell\"; \
          exec \"${{SHELL:-/bin/sh}}\" -l; fi; \
-         if tmux new-session -d -s {name} 2>/dev/null; then exec tmux attach-session -t ={name}; fi; \
-         exec tmux new-session -t ={name} \\; new-window \\; set-option destroy-unattached on'"
+         if tmux has-session -t ={name} 2>/dev/null; then \
+           exec tmux attach-session -t ={name}; \
+         fi; \
+         exec tmux new-session -s {name}'"
         , path = tmux_path!()
     )
 }
