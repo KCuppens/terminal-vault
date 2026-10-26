@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::vault::{write_atomic, FORMAT_VERSION, HEADER_LEN, MAGIC, TAG_LEN};
+use crate::vault::{write_atomic, KdfParams, FORMAT_VERSION, HEADER_LEN, MAGIC, TAG_LEN};
 
 const BACKUP_PREFIX: &str = "vault-";
 const BACKUP_SUFFIX: &str = ".bak";
@@ -166,6 +166,14 @@ pub fn restore_backup(vault_path: &Path, name: &str) -> Result<(), BackupError> 
     }
     let version = u16::from_le_bytes([bytes[8], bytes[9]]);
     if version != FORMAT_VERSION {
+        return Err(BackupError::NotAVault(name.to_string()));
+    }
+    let kdf = KdfParams {
+        m_cost_kib: u32::from_le_bytes([bytes[10], bytes[11], bytes[12], bytes[13]]),
+        t_cost: u32::from_le_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]),
+        p_cost: u32::from_le_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]),
+    };
+    if kdf.validate().is_err() {
         return Err(BackupError::NotAVault(name.to_string()));
     }
     match create_backup(vault_path) {

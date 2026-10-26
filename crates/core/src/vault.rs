@@ -60,7 +60,7 @@ impl Default for KdfParams {
 }
 
 impl KdfParams {
-    fn validate(&self) -> Result<Params, VaultError> {
+    pub(crate) fn validate(&self) -> Result<Params, VaultError> {
         if self.m_cost_kib > MAX_M_COST_KIB || self.t_cost > MAX_T_COST || self.p_cost > MAX_P_COST
         {
             return Err(VaultError::BadKdfParams);
