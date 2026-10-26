@@ -252,8 +252,15 @@ pub fn session_attach(app: AppHandle, state: State<'_, AppState>, id: Uuid) -> C
 async fn pump(app: AppHandle, id: Uuid, mut events: mpsc::Receiver<SessionEvent>) {
     let mut finished = false;
     while let Some(event) = events.recv().await {
+        let is_unlocked = app.state::<AppState>().is_unlocked();
         let _ = match event {
-            SessionEvent::Data(bytes) => app.emit(&topic(id, "data"), B64.encode(bytes)),
+            SessionEvent::Data(bytes) => {
+                if is_unlocked {
+                    app.emit(&topic(id, "data"), B64.encode(bytes))
+                } else {
+                    Ok(())
+                }
+            }
             SessionEvent::Exit(code) => {
                 finished = true;
                 app.emit(&topic(id, "exit"), code)
@@ -307,6 +314,7 @@ pub async fn session_resize(
 
 #[tauri::command]
 pub async fn session_close(state: State<'_, AppState>, id: Uuid) -> CmdResult<()> {
+    state.with_vault(|_| Ok(()))?;
     let entry = state
         .sessions
         .lock()

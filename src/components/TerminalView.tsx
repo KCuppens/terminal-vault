@@ -213,12 +213,15 @@ export function TerminalView({
 
     const onPaste = (e: ClipboardEvent) => {
       const text = e.clipboardData?.getData("text") ?? "";
-      if (!needsPasteConfirm(text)) return;
-      e.preventDefault();
-      e.stopPropagation();
-      setPendingPaste(text);
+      if (needsPasteConfirm(text)) {
+        e.preventDefault();
+        e.stopPropagation();
+        setPendingPaste(text);
+      }
     };
     el.addEventListener("paste", onPaste, true);
+    const textarea = el.querySelector("textarea");
+    textarea?.addEventListener("paste", onPaste, true);
 
     let frame = 0;
     const observer = new ResizeObserver(() => {
@@ -237,6 +240,7 @@ export function TerminalView({
       clearTimeout(flashTimer.current);
       observer.disconnect();
       el.removeEventListener("paste", onPaste, true);
+      textarea?.removeEventListener("paste", onPaste, true);
       for (const sub of subs) sub.dispose();
       term.dispose();
       termRef.current = null;

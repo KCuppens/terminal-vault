@@ -60,6 +60,10 @@ impl AppState {
         f(guard.as_mut().ok_or("vault is locked")?)
     }
 
+    pub fn is_unlocked(&self) -> bool {
+        self.vault.lock().map(|g| g.is_some()).unwrap_or(false)
+    }
+
     pub fn install_vault(&self, vault: Vault) -> CmdResult<()> {
         *self
             .vault

@@ -63,6 +63,7 @@ pub async fn vault_create(state: State<'_, AppState>, passphrase: String) -> Cmd
 
 #[tauri::command]
 pub async fn vault_unlock(state: State<'_, AppState>, passphrase: String) -> CmdResult<()> {
+    let pass = zeroize::Zeroizing::new(passphrase);
     state.throttle_check()?;
     state.try_begin_unlock()?;
     struct UnlockGuard<'a>(&'a AppState);
@@ -74,7 +75,6 @@ pub async fn vault_unlock(state: State<'_, AppState>, passphrase: String) -> Cmd
     let _guard = UnlockGuard(&state);
 
     let path = state.vault_path.clone();
-    let pass = zeroize::Zeroizing::new(passphrase);
     let opened = tauri::async_runtime::spawn_blocking(move || {
         let res = Vault::open(path, &pass);
         drop(pass);
@@ -154,6 +154,7 @@ pub async fn vault_backups(state: State<'_, AppState>) -> CmdResult<Vec<BackupIn
 
 #[tauri::command]
 pub async fn vault_restore(state: State<'_, AppState>, name: String) -> CmdResult<()> {
+    state.with_vault(|_| Ok(()))?;
     drop(state.take_vault());
     close_all(&state).await;
     let path = state.vault_path.clone();
