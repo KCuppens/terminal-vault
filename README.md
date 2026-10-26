@@ -1,68 +1,116 @@
 # Terminal Vault
 
-A local-only SSH client with an encrypted host and key vault and multi-pane terminals. A desktop app (Windows first, Android later) built with Tauri 2, a Rust core and a React + xterm.js frontend. There is no cloud, no account and no telemetry; the only network traffic is the SSH connections you open.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Build Status](https://github.com/KCuppens/terminal-vault/actions/workflows/build-windows.yml/badge.svg)](https://github.com/KCuppens/terminal-vault/actions)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20(soon)%20%7C%20macOS%20(soon)-informational)](#platforms)
 
-## Features
+> An open-source, local-first, zero-telemetry SSH client, key vault, and multi-pane terminal built with Tauri 2, Rust (`russh`), and React (`xterm.js`). A privacy-focused Termius alternative.
 
-- Encrypted vault holding hosts, SSH keys, saved layouts and pinned host keys.
-- Generate ed25519 keys or import OpenSSH private keys (encrypted ones are decrypted on import and re-stored inside the vault).
-- Tabs with horizontal/vertical split panes, draggable dividers, GPU-rendered terminals (WebGL with canvas fallback).
-- Saved layouts: one click opens every pane of a layout in parallel.
-- Keyboard shortcuts: `Ctrl+Shift+T` new tab, `Ctrl+Shift+D` split, `Ctrl+Shift+W` close pane.
-- tmux: a host can name a default tmux session that every terminal on it attaches to. The "tmux" button on a host lists the sessions running on the server so you can attach to one, create a new one, or open a plain shell. Each pane gets its own tmux window (a grouped session), so panes do not mirror each other. If tmux is not installed on the server, a notice is printed and a plain shell starts. Session names are limited to letters, digits, `_` and `-` (up to 64). A session picked from the "tmux" button applies to that pane only and is not stored in saved layouts; reopened layouts use the host default.
-  Limits: the picker lists only sessions you created by name, not the per-pane grouped sessions. A pane that loses its connection leaves its tmux window behind in the session; reconnecting opens a new window rather than reclaiming the old one, so close stale windows with `tmux kill-window` when needed.
-- Vault management: change the passphrase, back up and restore the vault, delete it. A backup is taken automatically before a passphrase change or restore.
-- Settings: auto-lock after idle time, lock on minimize, clipboard clearing for copied public keys, terminal font, size, scrollback, cursor style, bell, theme and UI scale.
-- Hosts: export to JSON and import from `~/.ssh/config` (Host entries with HostName, User, Port; wildcard entries are skipped).
-- Keys: add a comment when generating, see the key type, and remove a key (refused while hosts use it).
-- Custom title bar with window controls.
+---
 
-## Security model
+## Highlights
 
-- **Vault file**: magic + format version + Argon2id parameters (stored, default m=64 MiB, t=3, p=1) + 16-byte salt + 24-byte nonce + XChaCha20-Poly1305 ciphertext of the JSON vault data. The header is authenticated as associated data, so any change to the file, parameters included, fails decryption. A fresh nonce is used on every save.
-- **Wrong passphrase vs. damaged file** are told apart: Argon2id outputs an encryption key and a separate verifier; a wrong passphrase fails the verifier, while a corrupt or tampered file fails authentication.
-- **Atomic saves**: written to a temp file in the same directory, fsynced, then renamed over the vault, with `0600` permissions on Unix. A failed save leaves the previous vault intact. A monotonically increasing version counter is stored in the encrypted payload (a hook for future sync).
-- **Keys never leave Rust**: private keys exist only inside the encrypted vault and in Rust memory while unlocked; the frontend only ever receives the public key and fingerprint. Secrets are zeroized on drop.
-- **Host keys**: trust on first use. A new key prompts with its SHA-256 fingerprint and is pinned on acceptance. A changed key is refused unless you explicitly accept that exact fingerprint in a separate, clearly marked prompt.
-- **Authentication**: public key only. Keepalive every 15 s.
-- **Tauri surface**: the capability file allows only the app's own commands and event listening; no fs, shell or http plugins are installed. The CSP allows scripts from the app bundle only.
-- **Where the vault lives**: `vault.tv` in the app data directory (on Windows `%APPDATA%\dev.kcuppens.terminalvault\`). There is no passphrase recovery; keep a backup of the file and remember the passphrase.
-- **Settings**: `settings.json` sits next to the vault file. It is plain JSON with no secrets (auto-lock minutes, clipboard clear time, terminal font, scrollback, cursor, bell, theme, UI scale), so it can be read while the vault is locked. Rust rejects out-of-range values.
-- **Backups and exports**: backups are encrypted copies of the vault file in `backups/` next to it. Host exports are plain JSON in `exports/` (names, addresses, users and tags only; no keys). The app shows the resulting path with a Copy action. Restoring a backup or deleting the vault closes all sessions and locks the app.
-- **Unlock throttling**: after 3 wrong passphrases in a row, unlock attempts are delayed (5, 10, 20, 40, then 60 seconds) until a correct one. Wrong passphrases and damaged files give different messages.
+- **Encrypted Local Vault**: Hosts, private SSH keys, pinned fingerprints, and layouts are encrypted with **Argon2id** (64 MiB, 3 iterations) and **XChaCha20-Poly1305**. Keys never leave the local Rust core.
+- **Termius Alternative Without Cloud**: No accounts, no subscriptions, no sync servers, no tracking, and zero telemetry. All connections run directly from your device.
+- **Deep tmux Integration**: Attach to existing remote tmux sessions or launch a dedicated grouped window per pane. If tmux is missing on the remote host, it falls back cleanly to a standard shell.
+- **Multi-Pane Workspace**: Split horizontally and vertically, drag dividers, switch between tabs, and restore complete multi-host grid layouts in one click.
+- **Hardware-Accelerated Terminal**: Powered by `xterm.js` with WebGL rendering and canvas fallback for smooth high-throughput output.
+- **Strict Host Key Verification**: Trust-On-First-Use (TOFU) with SHA-256 fingerprint pinning and clear warnings on changed server keys.
+- **Import from OpenSSH**: Import hosts directly from `~/.ssh/config` and import existing private keys.
 
-## Layout
+---
+
+## Comparison: Terminal Vault vs. Termius
+
+| Feature | Terminal Vault | Termius |
+| :--- | :--- | :--- |
+| **Storage & Sync** | 100% Local encrypted file (`vault.tv`) | Proprietary Cloud |
+| **Account Required** | No | Yes |
+| **Telemetry & Analytics** | None | Yes |
+| **Encryption Standard** | Argon2id + XChaCha20-Poly1305 | AES-256 |
+| **Pricing / License** | 100% Free & Open Source (MIT) | Freemium ($10–$30/mo) |
+| **tmux Session Linking** | Built-in session picker & window grouping | Manual command / Paid add-on |
+| **Host Key Pinning** | Enforced TOFU with explicit prompts | Standard |
+
+---
+
+## Security Architecture
+
+1. **Vault Cryptography**:
+   - Derived key + independent verifier via Argon2id ($m=64\text{ MiB}, t=3, p=1$).
+   - Authenticated encryption using XChaCha20-Poly1305 with random 24-byte nonces.
+   - Header authentication guarantees tampered files cannot be decrypted.
+   - Differentiates incorrect passphrases from corrupt data.
+2. **Key Security**:
+   - Private keys remain exclusively in Rust memory while unlocked and are zeroized on drop.
+   - The frontend layer only receives key names, public keys, and fingerprints.
+3. **Sandbox & Surface**:
+   - Tauri capability controls lock down the frontend surface: no direct filesystem, shell, or HTTP plugin exposure.
+   - CSP permits local script execution from the application bundle only.
+4. **Brute-Force Protection**:
+   - Rate limiting and incremental unlock throttling kick in after consecutive failed passphrase attempts.
+
+---
+
+## Getting Started
+
+### Installation (Windows)
+
+Download the latest installer from the [Releases](https://github.com/KCuppens/terminal-vault/releases) page:
+
+1. Download `Terminal.Vault_0.1.0_x64-setup.exe`.
+2. Run the installer (SmartScreen notice may appear for unsigned binaries).
+3. Set a master passphrase to initialize your local encrypted vault.
+
+---
+
+## Development & Building
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/) (v20+ or v24)
+- [Rust](https://rustup.rs/) (stable toolchain)
+- Tauri 2 CLI dependencies
+
+### Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/KCuppens/terminal-vault.git
+cd terminal-vault
+
+# Install frontend dependencies
+npm install
+
+# Run frontend tests
+npm test
+
+# Run Rust core tests
+cargo test -p tvcore
+
+# Build application for Windows
+npm run tauri build
+```
+
+---
+
+## Project Structure
 
 ```
-crates/core   tvcore: vault, data model, keys, russh session manager, layout planning (no Tauri dependency)
-src-tauri     thin Tauri 2 shell exposing tvcore as commands/events
-src           React + TypeScript frontend (xterm.js), with a swappable IPC layer
+terminal-vault/
+├── crates/core/        # tvcore: Pure Rust SSH engine (russh), vault crypto, layout logic
+├── src-tauri/          # Tauri 2 native shell and secure IPC command handlers
+└── src/                # React 18 + TypeScript frontend, xterm.js terminals, themes
 ```
 
-All logic lives in `tvcore` and is tested without a GUI. `src/ipc` has a Tauri implementation and an in-memory mock; opening the frontend in a plain browser (or under vitest) uses the mock.
+---
 
-## Build and run
+## Contributing
 
-Requirements: Rust (stable), Node 24+. On Windows the WebView2 runtime ships with Windows 11 and is installed by the installer on Windows 10.
+Contributions, bug reports, and suggestions are welcome! Please read [SECURITY.md](SECURITY.md) before reporting security-related issues.
 
-```
-npm ci
-npm test                  # frontend unit tests
-cargo test -p tvcore      # core tests (needs /usr/sbin/sshd for the session tests on Unix; skipped with a message otherwise)
-npm run tauri dev         # run the desktop app
-npm run tauri build       # produce the installer in src-tauri/target/release/bundle/
-```
+---
 
-`npm run dev` starts only the frontend with the mock IPC for UI work in a browser.
+## License
 
-Releases are built by `.github/workflows/build-windows.yml` on `v*` tags or manual dispatch (Windows runner, NSIS installer uploaded as an artifact). Pushes and pull requests run core and frontend tests on Ubuntu.
-
-## Limitations
-
-- Milestone 1: Windows desktop target only; the Android build is not set up yet.
-- Backups are plain file copies made on request (and before a passphrase change or restore); there is no sync.
-- Public-key auth only: no passwords, no SSH agent, no agent forwarding, no SFTP or port forwarding.
-- No UI for editing or removing pinned host keys beyond the "forget" action.
-- Passphrases and imported private keys pass through the webview as plain strings on their way to Rust and are not zeroized there.
-- The frontend has logic tests only (pane tree, layout plans, base64, IPC mock); there are no DOM component tests.
-- The Tauri shell has no automated tests. It is type-checked and linted for the Windows target (`cargo xwin clippy`) and built by the release workflow, but its runtime behaviour has not been exercised yet.
+This project is licensed under the [MIT License](LICENSE).

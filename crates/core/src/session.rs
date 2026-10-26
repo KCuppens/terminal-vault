@@ -171,7 +171,12 @@ impl client::Handler for Client {
         &mut self,
         server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        let key = server_public_key.public_key();
+        let key = match server_public_key {
+            russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key,
+            russh::keys::PublicKeyOrCertificate::Certificate(_) => {
+                return Ok(false);
+            }
+        };
         let decision = self.known.decide(
             &self.addr_port,
             key_family(&key.algorithm()),
