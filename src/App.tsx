@@ -33,7 +33,7 @@ import {
   type VaultInfo,
 } from "./ipc";
 import { demoChangedKey, demoScene, SCENE_LAYOUT } from "./ipc/demo";
-import { remainingSeconds, showCountdown } from "./lib/autoLock";
+import { remainingSeconds } from "./lib/autoLock";
 import { errorText } from "./lib/errors";
 import { missingHostIds, planLayout, pruneLayout, workspaceToLayout } from "./lib/layoutPlan";
 import { buildPaletteItems, type ConnectMode, type PaletteItem } from "./lib/palette";
@@ -47,7 +47,7 @@ type View = "terminals" | "settings";
 
 type Dialog =
   | { kind: "host"; host: Host | null }
-  | { kind: "tmux"; host: Host }
+  | { kind: "tmux"; host: Host; mode: ConnectMode; paneId?: string }
   | { kind: "import" }
   | { kind: "saveLayout" }
   | { kind: "openLayout"; layout: Layout }
@@ -233,7 +233,7 @@ function Shell({ settings, onSettings }: { settings: Settings; onSettings(next: 
     const timer = setInterval(() => {
       const remaining = remainingSeconds(lastActivity.current, Date.now(), settingsRef.current.auto_lock_minutes);
       if (remaining === 0) void lock();
-      else setLockSeconds(showCountdown(remaining) ? remaining : null);
+      else setLockSeconds(remaining);
     }, 1000);
     return () => {
       events.forEach((name) => window.removeEventListener(name, touch));
@@ -320,8 +320,7 @@ function Shell({ settings, onSettings }: { settings: Settings; onSettings(next: 
 
   function connect(host: Host, mode: ConnectMode) {
     if (missingKey(host)) return;
-    if (mode === "tmux") setDialog({ kind: "tmux", host });
-    else startSession(host, mode);
+    setDialog({ kind: "tmux", host, mode });
   }
 
   function openTabs(tabs: TabState[]) {
@@ -618,7 +617,9 @@ function Shell({ settings, onSettings }: { settings: Settings; onSettings(next: 
                     theme={theme}
                     findToken={findToken}
                     dispatch={dispatch}
-                    onAssign={(paneId, host) => assign(paneId, host)}
+                    onAssign={(paneId, host) => {
+                      if (!missingKey(host)) setDialog({ kind: "tmux", host, mode: "default", paneId });
+                    }}
                     onStatus={onStatus}
                     onHostKeyChanged={setChangedKey}
                   />
@@ -654,6 +655,9 @@ function Shell({ settings, onSettings }: { settings: Settings; onSettings(next: 
             terminals={statusTerminals}
             unlockedAt={unlockedAt}
             lockSeconds={lockSeconds}
+            autoLockMinutes={settings.auto_lock_minutes}
+            onAutoLock={(minutes) => saveSettings({ ...settings, auto_lock_minutes: minutes })}
+            onLock={() => void lock()}
             onFocusPane={focusTerminal}
             onSettings={toggleSettings}
           />
@@ -670,9 +674,10 @@ function Shell({ settings, onSettings }: { settings: Settings; onSettings(next: 
         <TmuxPicker
           host={dialog.host}
           onChoose={(tmux) => {
-            const host = dialog.host;
+            const { host, mode, paneId } = dialog;
             setDialog(null);
-            startSession(host, "default", tmux);
+            if (paneId) assign(paneId, host, tmux);
+            else startSession(host, mode === "tmux" ? "default" : mode, tmux);
           }}
           onClose={() => setDialog(null)}
         />
