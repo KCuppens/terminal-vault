@@ -314,7 +314,6 @@ pub async fn session_resize(
 
 #[tauri::command]
 pub async fn session_close(state: State<'_, AppState>, id: Uuid) -> CmdResult<()> {
-    state.with_vault(|_| Ok(()))?;
     let entry = state
         .sessions
         .lock()

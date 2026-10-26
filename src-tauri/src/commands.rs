@@ -154,7 +154,10 @@ pub async fn vault_backups(state: State<'_, AppState>) -> CmdResult<Vec<BackupIn
 
 #[tauri::command]
 pub async fn vault_restore(state: State<'_, AppState>, name: String) -> CmdResult<()> {
-    state.with_vault(|_| Ok(()))?;
+    // If a vault is currently unlocked, require caller authorization; otherwise allow restore for recovery.
+    if state.is_unlocked() {
+        state.with_vault(|_| Ok(()))?;
+    }
     drop(state.take_vault());
     close_all(&state).await;
     let path = state.vault_path.clone();

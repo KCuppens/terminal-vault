@@ -52,14 +52,18 @@ const NO_TMUX_PAYLOAD = "tv-no-tmux";
 let audio: AudioContext | undefined;
 
 function beep() {
-  audio ??= new AudioContext();
-  const osc = audio.createOscillator();
-  const gain = audio.createGain();
-  osc.frequency.value = 880;
-  gain.gain.value = 0.05;
-  osc.connect(gain).connect(audio.destination);
-  osc.start();
-  osc.stop(audio.currentTime + 0.08);
+  try {
+    audio ??= new AudioContext();
+    const osc = audio.createOscillator();
+    const gain = audio.createGain();
+    osc.frequency.value = 880;
+    gain.gain.value = 0.05;
+    osc.connect(gain).connect(audio.destination);
+    osc.start();
+    osc.stop(audio.currentTime + 0.08);
+  } catch {
+    // Ignore AudioContext or autoplay policy failures
+  }
 }
 
 function loadRenderer(term: Terminal) {

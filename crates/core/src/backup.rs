@@ -177,7 +177,7 @@ pub fn restore_backup(vault_path: &Path, name: &str) -> Result<(), BackupError> 
         return Err(BackupError::NotAVault(name.to_string()));
     }
     match create_backup(vault_path) {
-        Ok(_) | Err(BackupError::NoVault) => {}
+        Ok(_) | Err(BackupError::NoVault) | Err(BackupError::NotAVault(_)) => {}
         Err(e) => return Err(e),
     }
     write_atomic(vault_path, &bytes)?;

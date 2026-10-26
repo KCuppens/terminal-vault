@@ -140,6 +140,7 @@ export function ImportKeyDialog({ onImported, onClose }: { onImported(key: KeyIn
   const [source, setSource] = useState<ImportSource>("paste");
   const [text, setText] = useState("");
   const [fileName, setFileName] = useState<string | null>(null);
+  const [customName, setCustomName] = useState("");
   const [encrypted, setEncrypted] = useState(false);
   const [passphrase, setPassphrase] = useState("");
   const [shown, setShown] = useState(false);
@@ -148,14 +149,15 @@ export function ImportKeyDialog({ onImported, onClose }: { onImported(key: KeyIn
   const [attempted, setAttempted] = useState(false);
 
   const needsPassphrase = encrypted && passphrase === "";
-  const name = fileName ? fileName.replace(/\.[^.]*$/, "") : "";
+  const effectiveName = customName.trim() || (fileName ? fileName.replace(/\.[^.]*$/, "") : "");
+  const missingName = effectiveName === "";
   const missingKey = text.trim() === "";
-
   async function loadFile(file: File | undefined) {
     if (!file) return;
     try {
       setText(await file.text());
       setFileName(file.name);
+      setCustomName((curr) => curr || file.name.replace(/\.[^.]*$/, ""));
       setError(null);
     } catch (err) {
       setError(errorText(err));
@@ -165,11 +167,11 @@ export function ImportKeyDialog({ onImported, onClose }: { onImported(key: KeyIn
   async function submit(e: FormEvent) {
     e.preventDefault();
     setAttempted(true);
-    if (busy || missingKey || needsPassphrase) return;
+    if (busy || missingKey || missingName || needsPassphrase) return;
     setBusy(true);
     setError(null);
     try {
-      const key = await getIpc().keysImport(name.trim() || "imported-key", text, encrypted ? passphrase : null);
+      const key = await getIpc().keysImport(effectiveName, text, encrypted ? passphrase : null);
       onImported(key);
     } catch (err) {
       const message = errorText(err);
@@ -190,7 +192,7 @@ export function ImportKeyDialog({ onImported, onClose }: { onImported(key: KeyIn
           <button type="button" className="btn" disabled={busy} onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" form="import-key" className="btn primary" disabled={busy || needsPassphrase}>
+          <button type="submit" form="import-key" className="btn primary" disabled={busy || needsPassphrase || (attempted && missingName)}>
             {busy && <Spinner />}
             Import key
           </button>
@@ -198,6 +200,22 @@ export function ImportKeyDialog({ onImported, onClose }: { onImported(key: KeyIn
       }
     >
       <form id="import-key" className="form" noValidate onSubmit={(e) => void submit(e)}>
+        <div className="field">
+          <label htmlFor="import-name" className="label">
+            Key name
+          </label>
+          <input
+            id="import-name"
+            className="input"
+            type="text"
+            placeholder="e.g. production-bastion"
+            value={customName}
+            disabled={busy}
+            aria-invalid={attempted && missingName ? true : undefined}
+            onChange={(e) => setCustomName(e.target.value)}
+          />
+          {attempted && missingName && <p className="error-text">Add a key name.</p>}
+        </div>
         <Segmented<ImportSource>
           label="Key source"
           value={source}
