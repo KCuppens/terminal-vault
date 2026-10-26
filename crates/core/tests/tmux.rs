@@ -53,6 +53,7 @@ fn old_vault_hosts_without_tmux_field_still_load() {
     assert_eq!(h.tmux_session, None);
 }
 
+#[cfg(unix)]
 #[test]
 fn without_tmux_the_command_prints_a_notice_and_runs_a_plain_shell() {
     if ["/usr/local/bin", "/opt/homebrew/bin", "/opt/local/bin"]
