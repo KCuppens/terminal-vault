@@ -136,6 +136,7 @@ pub async fn vault_change_passphrase(
 
 #[tauri::command]
 pub async fn vault_backup(state: State<'_, AppState>) -> CmdResult<BackupInfo> {
+    state.with_vault(|_| Ok(()))?;
     let path = state.vault_path.clone();
     tauri::async_runtime::spawn_blocking(move || backup::create_backup(&path))
         .await

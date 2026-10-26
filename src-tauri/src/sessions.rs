@@ -251,13 +251,23 @@ pub fn session_attach(app: AppHandle, state: State<'_, AppState>, id: Uuid) -> C
 
 async fn pump(app: AppHandle, id: Uuid, mut events: mpsc::Receiver<SessionEvent>) {
     let mut finished = false;
+    let mut buffered_data: Vec<Vec<u8>> = Vec::new();
+    const MAX_BUFFERED_CHUNKS: usize = 256;
     while let Some(event) = events.recv().await {
         let is_unlocked = app.state::<AppState>().is_unlocked();
+        if is_unlocked && !buffered_data.is_empty() {
+            for chunk in buffered_data.drain(..) {
+                let _ = app.emit(&topic(id, "data"), B64.encode(chunk));
+            }
+        }
         let _ = match event {
             SessionEvent::Data(bytes) => {
                 if is_unlocked {
                     app.emit(&topic(id, "data"), B64.encode(bytes))
                 } else {
+                    if buffered_data.len() < MAX_BUFFERED_CHUNKS {
+                        buffered_data.push(bytes);
+                    }
                     Ok(())
                 }
             }
