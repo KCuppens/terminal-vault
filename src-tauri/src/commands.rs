@@ -48,10 +48,15 @@ pub fn vault_exists(state: State<'_, AppState>) -> bool {
 #[tauri::command]
 pub async fn vault_create(state: State<'_, AppState>, passphrase: String) -> CmdResult<()> {
     let path = state.vault_path.clone();
-    let vault = tauri::async_runtime::spawn_blocking(move || Vault::create(path, &passphrase))
-        .await
-        .map_err(err)?
-        .map_err(err)?;
+    let pass = zeroize::Zeroizing::new(passphrase);
+    let vault = tauri::async_runtime::spawn_blocking(move || {
+        let res = Vault::create(path, &pass);
+        drop(pass);
+        res
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
     state.throttle_success();
     state.install_vault(vault)
 }
@@ -59,10 +64,24 @@ pub async fn vault_create(state: State<'_, AppState>, passphrase: String) -> Cmd
 #[tauri::command]
 pub async fn vault_unlock(state: State<'_, AppState>, passphrase: String) -> CmdResult<()> {
     state.throttle_check()?;
+    state.try_begin_unlock()?;
+    struct UnlockGuard<'a>(&'a AppState);
+    impl Drop for UnlockGuard<'_> {
+        fn drop(&mut self) {
+            self.0.finish_unlock();
+        }
+    }
+    let _guard = UnlockGuard(&state);
+
     let path = state.vault_path.clone();
-    let opened = tauri::async_runtime::spawn_blocking(move || Vault::open(path, &passphrase))
-        .await
-        .map_err(err)?;
+    let pass = zeroize::Zeroizing::new(passphrase);
+    let opened = tauri::async_runtime::spawn_blocking(move || {
+        let res = Vault::open(path, &pass);
+        drop(pass);
+        res
+    })
+    .await
+    .map_err(err)?;
     match opened {
         Ok(vault) => {
             state.throttle_success();
@@ -100,14 +119,19 @@ pub async fn vault_change_passphrase(
 ) -> CmdResult<()> {
     state.with_vault(|_| Ok(()))?;
     let path = state.vault_path.clone();
+    let cur = zeroize::Zeroizing::new(current);
+    let nxt = zeroize::Zeroizing::new(next);
     tauri::async_runtime::spawn_blocking(move || -> CmdResult<()> {
-        Vault::open(&path, &current).map_err(err)?;
+        Vault::open(&path, &cur).map_err(err)?;
+        drop(cur);
         backup::create_backup(&path).map_err(err)?;
         Ok(())
     })
     .await
     .map_err(err)??;
-    state.with_vault(|v| v.change_passphrase(&next).map_err(err))
+    let res = state.with_vault(|v| v.change_passphrase(&nxt).map_err(err));
+    drop(nxt);
+    res
 }
 
 #[tauri::command]
@@ -137,12 +161,12 @@ pub async fn vault_restore(state: State<'_, AppState>, name: String) -> CmdResul
         .await
         .map_err(err)?
         .map_err(err)?;
-    state.throttle_success();
     Ok(())
 }
 
 #[tauri::command]
 pub async fn vault_delete(state: State<'_, AppState>) -> CmdResult<()> {
+    state.with_vault(|_| Ok(()))?;
     drop(state.take_vault());
     close_all(&state).await;
     let path = state.vault_path.clone();
@@ -194,7 +218,8 @@ pub async fn hosts_export(state: State<'_, AppState>) -> CmdResult<String> {
 }
 
 #[tauri::command]
-pub async fn hosts_import_ssh_config(app: AppHandle) -> CmdResult<Vec<HostInput>> {
+pub async fn hosts_import_ssh_config(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Vec<HostInput>> {
+    state.with_vault(|_| Ok(()))?;
     let Ok(home) = app.path().home_dir() else {
         return Ok(Vec::new());
     };
@@ -249,10 +274,12 @@ pub async fn keys_import(
     private_key: String,
     passphrase: Option<String>,
 ) -> CmdResult<KeyInfo> {
-    store_key(
-        &state,
-        keys::import(&name, &private_key, passphrase.as_deref()).map_err(err)?,
-    )
+    let pkey = zeroize::Zeroizing::new(private_key);
+    let pass = passphrase.map(zeroize::Zeroizing::new);
+    let imported = keys::import(&name, &pkey, pass.as_deref().map(|s| &**s)).map_err(err);
+    drop(pkey);
+    drop(pass);
+    store_key(&state, imported?)
 }
 
 #[tauri::command]

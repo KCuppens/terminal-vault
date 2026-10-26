@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::vault::{write_atomic, MAGIC};
+use crate::vault::{write_atomic, FORMAT_VERSION, HEADER_LEN, MAGIC, TAG_LEN};
 
 const BACKUP_PREFIX: &str = "vault-";
 const BACKUP_SUFFIX: &str = ".bak";
@@ -114,14 +114,14 @@ pub fn create_backup(vault_path: &Path) -> Result<BackupInfo, BackupError> {
     let dir = backups_dir(vault_path);
     fs::create_dir_all(&dir)?;
     let stamp = timestamp(now_secs());
-    let mut path = dir.join(format!("{BACKUP_PREFIX}{stamp}{BACKUP_SUFFIX}"));
     let mut n = 1u32;
-    while path.exists() {
+    let mut file_path = dir.join(format!("{BACKUP_PREFIX}{stamp}{BACKUP_SUFFIX}"));
+    while file_path.exists() {
         n += 1;
-        path = dir.join(format!("{BACKUP_PREFIX}{stamp}-{n}{BACKUP_SUFFIX}"));
+        file_path = dir.join(format!("{BACKUP_PREFIX}{stamp}-{n}{BACKUP_SUFFIX}"));
     }
-    write_atomic(&path, &bytes)?;
-    Ok(info_for(path)?)
+    write_atomic(&file_path, &bytes)?;
+    Ok(info_for(file_path)?)
 }
 
 /// Newest first. Empty when there is no backups folder.
@@ -161,7 +161,11 @@ pub fn restore_backup(vault_path: &Path, name: &str) -> Result<(), BackupError> 
         }
         Err(e) => return Err(e.into()),
     };
-    if !bytes.starts_with(MAGIC) {
+    if bytes.len() < HEADER_LEN + TAG_LEN || !bytes.starts_with(MAGIC) {
+        return Err(BackupError::NotAVault(name.to_string()));
+    }
+    let version = u16::from_le_bytes([bytes[8], bytes[9]]);
+    if version != FORMAT_VERSION {
         return Err(BackupError::NotAVault(name.to_string()));
     }
     match create_backup(vault_path) {

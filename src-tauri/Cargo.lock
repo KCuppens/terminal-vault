@@ -4390,6 +4390,7 @@ dependencies = [
  "tokio",
  "tvcore",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

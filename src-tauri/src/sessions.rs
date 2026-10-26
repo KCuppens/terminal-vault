@@ -235,6 +235,7 @@ pub fn host_key_confirm(
 /// so nothing emitted during connect is lost.
 #[tauri::command]
 pub fn session_attach(app: AppHandle, state: State<'_, AppState>, id: Uuid) -> CmdResult<()> {
+    state.with_vault(|_| Ok(()))?;
     let events = state
         .sessions
         .lock()
@@ -288,6 +289,7 @@ pub async fn session_write(
     id: Uuid,
     data_b64: String,
 ) -> CmdResult<()> {
+    state.with_vault(|_| Ok(()))?;
     let bytes = B64.decode(data_b64).map_err(err)?;
     handle_of(&state, id)?.write(&bytes).await.map_err(err)
 }
@@ -299,6 +301,7 @@ pub async fn session_resize(
     cols: u32,
     rows: u32,
 ) -> CmdResult<()> {
+    state.with_vault(|_| Ok(()))?;
     handle_of(&state, id)?.resize(cols, rows).await.map_err(err)
 }
 

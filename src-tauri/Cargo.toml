@@ -19,6 +19,7 @@ serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["sync"] }
 base64 = "0.22"
 uuid = { version = "1", features = ["v4", "serde"] }
+zeroize = { version = "1", features = ["derive"] }
 
 [profile.release]
 lto = true

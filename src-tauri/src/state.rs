@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -32,6 +32,7 @@ pub struct AppState {
     lock_epoch: AtomicU64,
     pub manager: SessionManager,
     throttle: Mutex<UnlockThrottle>,
+    unlocking: AtomicBool,
     started: Instant,
 }
 
@@ -45,6 +46,7 @@ impl AppState {
             lock_epoch: AtomicU64::new(0),
             manager: SessionManager::default(),
             throttle: Mutex::new(UnlockThrottle::default()),
+            unlocking: AtomicBool::new(false),
             started: Instant::now(),
         }
     }
@@ -115,5 +117,16 @@ impl AppState {
         if let Ok(mut t) = self.throttle.lock() {
             t.record_success();
         }
+    }
+
+    pub fn try_begin_unlock(&self) -> CmdResult<()> {
+        if self.unlocking.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return Err("an unlock attempt is already in progress".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn finish_unlock(&self) {
+        self.unlocking.store(false, Ordering::SeqCst);
     }
 }

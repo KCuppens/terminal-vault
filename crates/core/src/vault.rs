@@ -12,17 +12,16 @@ use zeroize::Zeroizing;
 use crate::model::{ModelError, VaultData};
 
 pub(crate) const MAGIC: &[u8; 8] = b"TVAULT\0\0";
-const FORMAT_VERSION: u16 = 1;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const VERIFIER_LEN: usize = 32;
 const KEY_LEN: usize = 32;
-const HEADER_LEN: usize = 8 + 2 + 4 + 4 + 4 + SALT_LEN + VERIFIER_LEN + NONCE_LEN;
-const TAG_LEN: usize = 16;
+pub(crate) const HEADER_LEN: usize = 8 + 2 + 4 + 4 + 4 + SALT_LEN + VERIFIER_LEN + NONCE_LEN;
+pub(crate) const TAG_LEN: usize = 16;
+pub(crate) const FORMAT_VERSION: u16 = 1;
 const MAX_M_COST_KIB: u32 = 1 << 20;
 const MAX_T_COST: u32 = 100;
 const MAX_P_COST: u32 = 16;
-
 #[derive(Debug, Error)]
 pub enum VaultError {
     #[error("wrong passphrase")]
@@ -125,7 +124,14 @@ fn derive(
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&x, &y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    std::hint::black_box(diff) == 0
 }
 
 fn u32_at(buf: &[u8], at: usize) -> Result<u32, VaultError> {
