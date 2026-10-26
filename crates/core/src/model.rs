@@ -97,13 +97,13 @@ pub fn hosts_export_json(hosts: &[Host]) -> String {
     serde_json::to_string_pretty(&rows).expect("plain rows always serialize")
 }
 
-/// tmux treats '.' and ':' as separators and the name goes into a shell command, so only a
-/// conservative character set is allowed.
+/// tmux treats ':' as a target separator and the name goes into a shell command, so only a
+/// conservative character set is allowed (letters, digits, '.', '_' and '-').
 pub fn valid_tmux_name(name: &str) -> bool {
     (1..=64).contains(&name.len())
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

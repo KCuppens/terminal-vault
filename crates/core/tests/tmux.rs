@@ -18,12 +18,11 @@ fn host(tmux: Option<&str>) -> Host {
 
 #[test]
 fn tmux_names_reject_anything_tmux_or_the_shell_would_interpret() {
-    for ok in ["main", "work_1", "a-b", &"x".repeat(64)] {
+    for ok in ["main", "work_1", "a-b", "v1.2", "app.dev", &"x".repeat(64)] {
         assert!(valid_tmux_name(ok), "{ok}");
     }
     for bad in [
         "",
-        "a.b",
         "a:b",
         "a b",
         "a;rm",

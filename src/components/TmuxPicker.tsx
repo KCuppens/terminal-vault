@@ -45,8 +45,22 @@ export function TmuxPicker({ host, onChoose, onClose }: Props) {
 
   function create(e: FormEvent) {
     e.preventDefault();
+    if (freshName === "") {
+      // If fresh name is empty, connect with selected session
+      onChoose(selected);
+      return;
+    }
     setTouched(true);
     if (freshValid) onChoose(freshName);
+  }
+
+  function handleConfirm() {
+    if (freshName !== "") {
+      setTouched(true);
+      if (freshValid) onChoose(freshName);
+    } else {
+      onChoose(selected);
+    }
   }
 
   const title = `tmux on ${host.name}`;
@@ -82,21 +96,54 @@ export function TmuxPicker({ host, onChoose, onClose }: Props) {
   }
 
   const { sessions } = load;
-  function pick(value: string) {
-    setSelected(value);
-    onChoose(value);
-  }
   return (
-    <Modal title={title} size="sm" className="tmux-modal" onClose={onClose}>
+    <Modal
+      title={title}
+      size="sm"
+      className="tmux-modal"
+      onClose={onClose}
+      footer={
+        <div className="modal-actions" style={{ display: "flex", justifyContent: "flex-end", gap: "8px", width: "100%" }}>
+          <button type="button" className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn primary" onClick={handleConfirm}>
+            Connect
+          </button>
+        </div>
+      }
+    >
       <fieldset className="radio-list">
         <legend className="visually-hidden">Session</legend>
-        <label className="radio-row">
-          <input type="radio" name="tmux" checked={selected === PLAIN} onChange={() => pick(PLAIN)} data-autofocus />
+        <label
+          className="radio-row"
+          style={{ cursor: "pointer" }}
+          onClick={() => setSelected(PLAIN)}
+          onDoubleClick={() => onChoose(PLAIN)}
+        >
+          <input
+            type="radio"
+            name="tmux"
+            checked={selected === PLAIN}
+            onChange={() => setSelected(PLAIN)}
+            data-autofocus
+          />
           <span>Plain shell</span>
         </label>
         {sessions.map((s) => (
-          <label key={s} className="radio-row">
-            <input type="radio" name="tmux" checked={selected === s} onChange={() => pick(s)} />
+          <label
+            key={s}
+            className="radio-row"
+            style={{ cursor: "pointer" }}
+            onClick={() => setSelected(s)}
+            onDoubleClick={() => onChoose(s)}
+          >
+            <input
+              type="radio"
+              name="tmux"
+              checked={selected === s}
+              onChange={() => setSelected(s)}
+            />
             <span>{s}</span>
             {s === host.tmux_session && <span className="chip">Default</span>}
           </label>
@@ -113,13 +160,16 @@ export function TmuxPicker({ host, onChoose, onClose }: Props) {
             value={fresh}
             spellCheck={false}
             aria-invalid={touched && !freshValid ? true : undefined}
-            onChange={(e) => setFresh(e.target.value)}
+            onChange={(e) => {
+              setFresh(e.target.value);
+              if (touched) setTouched(false);
+            }}
           />
           <button type="submit" className="btn primary">
-            Go
+            {freshName === "" ? "Connect" : "Create"}
           </button>
         </div>
-        <p className={touched && !freshValid ? "error-text" : "hint"}>Use letters, digits, _ or -</p>
+        <p className={touched && !freshValid ? "error-text" : "hint"}>Use letters, digits, ., _ or -</p>
       </form>
     </Modal>
   );

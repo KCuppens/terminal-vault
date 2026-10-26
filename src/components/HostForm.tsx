@@ -54,7 +54,7 @@ export function HostForm({ host, keys, onSaved, onClose }: Props) {
   if (addr.trim() === "") errors.addr = "Enter a hostname or IP address.";
   if (!/^\d+$/.test(port.trim()) || portNumber < 1 || portNumber > 65535) errors.port = "Use a port from 1 to 65535.";
   if (user.trim() === "") errors.user = "Enter a user name.";
-  if (tmux.trim() !== "" && !TMUX_NAME.test(tmux.trim())) errors.tmux = "Use letters, digits, _ or -.";
+  if (tmux.trim() !== "" && !TMUX_NAME.test(tmux.trim())) errors.tmux = "Use letters, digits, ., _ or -.";
   const valid = Object.keys(errors).length === 0;
   const show = (field: keyof Errors) => (attempted ? errors[field] : undefined);
 
@@ -205,7 +205,7 @@ export function HostForm({ host, keys, onSaved, onClose }: Props) {
             <>
               Leave blank for a plain shell.
               <br />
-              Use letters, digits, _ or -.
+              Use letters, digits, ., _ or -.
             </>
           }
           error={show("tmux")}
