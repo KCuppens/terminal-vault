@@ -80,7 +80,7 @@ pub async fn vault_unlock(state: State<'_, AppState>, passphrase: String) -> Cmd
 #[tauri::command]
 pub async fn vault_lock(state: State<'_, AppState>) -> CmdResult<()> {
     drop(state.take_vault());
-    close_all(&state).await;
+    // Retain existing background SSH/PTY connections across lock so user work stays active
     Ok(())
 }
 

@@ -70,8 +70,8 @@ const MAX_FONT_FAMILY_LEN: usize = 200;
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            auto_lock_minutes: 15,
-            lock_on_minimize: true,
+            auto_lock_minutes: 60,
+            lock_on_minimize: false,
             clipboard_clear_seconds: 30,
             font_family: r#""Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace"#.into(),
             font_size: 14,

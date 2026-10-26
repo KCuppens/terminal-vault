@@ -61,8 +61,8 @@ function sameName(a: string, b: string): boolean {
 const MOCK_DIR = "/mock/terminal-vault";
 
 const DEFAULT_SETTINGS: Settings = {
-  auto_lock_minutes: 15,
-  lock_on_minimize: true,
+  auto_lock_minutes: 60,
+  lock_on_minimize: false,
   clipboard_clear_seconds: 30,
   font_family: "JetBrains Mono",
   font_size: 14,
@@ -214,7 +214,7 @@ export function createMockIpc(options: MockOptions = {}): Ipc {
     },
     async vaultLock() {
       unlocked = false;
-      for (const id of [...sessions.keys()]) await this.sessionClose(id);
+      // Retain existing background sessions across lock so user work stays active
     },
     async vaultChangePassphrase(current, next) {
       requireUnlocked();

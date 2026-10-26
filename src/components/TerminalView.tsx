@@ -143,7 +143,45 @@ export function TerminalView({
     term.loadAddon(searchAddon);
     term.open(el);
     loadRenderer(term);
-    term.attachCustomKeyEventHandler((e) => matchShortcut(e) === null);
+    term.attachCustomKeyEventHandler((e) => {
+      if (matchShortcut(e) !== null) return false;
+      const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+      if (isCtrlOrMeta && !e.altKey) {
+        const key = e.key.toLowerCase();
+        if (key === "c") {
+          // Ctrl+C with text selected: copy to clipboard.
+          // Ctrl+C without selection: let xterm send SIGINT (\x03) to the shell.
+          if (term.hasSelection()) {
+            if (e.type === "keydown") {
+              const text = term.getSelection();
+              if (text) void navigator.clipboard?.writeText(text);
+            }
+            return false;
+          }
+          return true;
+        }
+        if (key === "v") {
+          // Ctrl+V: handle paste via clipboard API.
+          if (e.type === "keydown") {
+            void (async () => {
+              try {
+                const text = await navigator.clipboard?.readText();
+                if (!text) return;
+                if (needsPasteConfirm(text)) {
+                  setPendingPaste(text);
+                } else {
+                  term.paste(text);
+                }
+              } catch {
+                // Fallback to native paste if clipboard readText fails/denied
+              }
+            })();
+          }
+          return false;
+        }
+      }
+      return true;
+    });
 
     const ipc = getIpc();
     const send = (promise: Promise<void>) => promise.catch(() => undefined);

@@ -140,9 +140,24 @@ export function HostsPanel(props: Props) {
                     Assign key
                   </button>
                 ) : (
-                  <button type="button" className="btn small btn-connect" onClick={() => props.onConnect(host, "default")}>
-                    Connect
-                  </button>
+                  <div className="host-actions">
+                    <button
+                      type="button"
+                      className="btn small btn-tmux"
+                      title={`Choose tmux session on ${host.name}`}
+                      onClick={() => props.onConnect(host, "tmux")}
+                    >
+                      tmux
+                    </button>
+                    <button
+                      type="button"
+                      className="btn small btn-connect"
+                      title={host.tmux_session ? `Connect to ${host.name} (tmux: ${host.tmux_session})` : `Connect to ${host.name}`}
+                      onClick={() => props.onConnect(host, "default")}
+                    >
+                      Connect
+                    </button>
+                  </div>
                 )}
                 <Menu label={`Actions for ${host.name}`} items={menuFor(host)} className="icon-btn host-more" menuClassName="host-menu" />
               </li>

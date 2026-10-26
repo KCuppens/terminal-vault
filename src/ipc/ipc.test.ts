@@ -201,7 +201,7 @@ describe("mock settings", () => {
   it("returns defaults and rejects out-of-range values", async () => {
     const ipc = createMockIpc();
     const s = await ipc.settingsGet();
-    expect(s.auto_lock_minutes).toBe(15);
+    expect(s.auto_lock_minutes).toBe(60);
     expect(await ipc.settingsSave({ ...s, font_size: 18 })).toMatchObject({ font_size: 18 });
     expect((await ipc.settingsGet()).font_size).toBe(18);
     await expect(ipc.settingsSave({ ...s, font_size: 7 })).rejects.toThrow("font size");

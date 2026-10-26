@@ -185,21 +185,24 @@ function Shell({ settings, onSettings }: { settings: Settings; onSettings(next: 
   }, []);
 
   const lock = useCallback(async () => {
-    clearSession();
+    // When locking, do NOT reset active tabs/panes or SSH sessions.
+    // Close sensitive modals/dialogs, clear transient filters and lock the vault.
+    setDialog(null);
+    setPaletteOpen(false);
+    setKeyFilter(null);
+    setLockSeconds(null);
     try {
       await getIpc().vaultLock();
     } catch (err) {
       toast({ message: `Could not lock the vault. ${errorText(err)}`, tone: "error" });
     }
     setPhase("locked");
-  }, [clearSession, toast]);
-
+  }, [toast]);
   function onUnlocked() {
     setVaultExists(true);
     setUnlockedAt(new Date());
     lastActivity.current = Date.now();
     const scene = demoScene();
-    setPanel(scene === "main" ? null : "hosts");
     setPhase("unlocked");
     refresh()
       .then(async () => {
@@ -207,7 +210,7 @@ function Shell({ settings, onSettings }: { settings: Settings; onSettings(next: 
         const ipc = getIpc();
         const [h, l] = await Promise.all([ipc.hostsList(), ipc.layoutList()]);
         const layout = l.find((x) => x.name === SCENE_LAYOUT);
-        if (layout) openTabs(planLayout(layout, h, uuid));
+        if (layout && workspace.tabs.length === 0) openTabs(planLayout(layout, h, uuid));
       })
       .catch((err) => toast({ message: `Could not load the vault. ${errorText(err)}`, tone: "error" }));
   }
@@ -530,14 +533,19 @@ function Shell({ settings, onSettings }: { settings: Settings; onSettings(next: 
         ) : (
           <CreateVault info={info} onCreated={onUnlocked} />
         ))}
-      {unlocked && (
-        <>
+      {(unlocked || (phase === "locked" && workspace.tabs.length > 0)) && (
+        <div
+          className="workbench-wrapper"
+          style={{ display: unlocked ? "contents" : "none" }}
+          aria-hidden={!unlocked}
+        >
           <div className="workbench">
             <Rail
               panel={panel}
               settingsOpen={view === "settings"}
               onPanel={(id) => showPanel(id, true)}
               onSettings={toggleSettings}
+              onLock={() => void lock()}
             />
             {view === "terminals" && panel && (
               <aside className="side-panel">
@@ -661,7 +669,7 @@ function Shell({ settings, onSettings }: { settings: Settings; onSettings(next: 
             onFocusPane={focusTerminal}
             onSettings={toggleSettings}
           />
-        </>
+        </div>
       )}
 
       {unlocked && paletteOpen && (

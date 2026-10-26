@@ -8,6 +8,7 @@ interface Props {
   settingsOpen: boolean;
   onPanel(id: PanelId): void;
   onSettings(): void;
+  onLock(): void;
 }
 
 interface RailItem {
@@ -23,7 +24,7 @@ const ITEMS: RailItem[] = [
   { id: "layouts", label: "Layouts", icon: "grid", action: "openLayouts" },
 ];
 
-export function Rail({ panel, settingsOpen, onPanel, onSettings }: Props) {
+export function Rail({ panel, settingsOpen, onPanel, onSettings, onLock }: Props) {
   return (
     <nav className="rail" aria-label="Main">
       <div className="rail-group">
@@ -45,6 +46,15 @@ export function Rail({ panel, settingsOpen, onPanel, onSettings }: Props) {
         })}
       </div>
       <div className="rail-group">
+        <button
+          type="button"
+          className="rail-btn"
+          aria-label="Lock vault"
+          title={`Lock vault (${shortcutKeys("lock").join("+")})`}
+          onClick={onLock}
+        >
+          <Icon name="lock" size={24} />
+        </button>
         <button
           type="button"
           className={settingsOpen ? "rail-btn active" : "rail-btn"}

@@ -45,8 +45,8 @@ export function TitleBar({ unlocked, onPalette, onLock, onMinimize, onToggleMaxi
             title={`Lock vault (${shortcutKeys("lock").join("+")})`}
             aria-label="Lock vault"
           >
-            <Icon name="unlockSolid" size={18} />
-            Unlocked
+            <Icon name="lock" size={16} />
+            Lock Vault
           </button>
         )}
         <div className="window-controls">

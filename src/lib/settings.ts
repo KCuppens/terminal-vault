@@ -1,8 +1,8 @@
 import type { Settings } from "../ipc";
 
 export const DEFAULT_SETTINGS: Settings = {
-  auto_lock_minutes: 15,
-  lock_on_minimize: true,
+  auto_lock_minutes: 60,
+  lock_on_minimize: false,
   clipboard_clear_seconds: 30,
   font_family: "JetBrains Mono",
   font_size: 14,

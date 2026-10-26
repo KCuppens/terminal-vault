@@ -5,8 +5,8 @@ use tvcore::{Settings, SettingsError};
 #[test]
 fn defaults_match_the_documented_values() {
     let s = Settings::default();
-    assert_eq!(s.auto_lock_minutes, 15);
-    assert!(s.lock_on_minimize);
+    assert_eq!(s.auto_lock_minutes, 60);
+    assert!(!s.lock_on_minimize);
     assert_eq!(s.clipboard_clear_seconds, 30);
     assert_eq!(s.font_size, 14);
     assert_eq!(s.scrollback, 10_000);
