@@ -295,8 +295,8 @@ pub fn tmux_command(name: &str) -> String {
          if tmux has-session -t ={name} 2>/dev/null; then \
            exec tmux attach-session -t ={name}; \
          fi; \
-         exec tmux new-session -s {name}'"
-        , path = tmux_path!()
+         exec tmux new-session -s {name}'",
+        path = tmux_path!()
     )
 }
 
